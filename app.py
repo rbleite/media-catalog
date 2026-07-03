@@ -90,6 +90,22 @@ if config.has_tmdb():
 else:
     st.sidebar.caption("Sem chave TMDB — vê o README para ligar capas.")
 
+if config.has_igdb():
+    _pg = conn.execute(
+        "SELECT COUNT(*) FROM works WHERE type='game' AND enriched=0").fetchone()[0]
+    if st.sidebar.button(f"🎮 Enriquecer jogos via IGDB ({_pg} por fazer)",
+                         disabled=_pg == 0):
+        from media_catalog.enrich import igdb
+        prog = st.sidebar.progress(0.0, text="A enriquecer…")
+        def _cbg(i, n, m, ms):
+            prog.progress(i / max(n, 1), text=f"{i}/{n} · {m} capas")
+        res = igdb.enrich_games(conn, progress=_cbg)
+        st.sidebar.success(f"✓ {res['matched']} capas · {res['missed']} sem match")
+        st.cache_resource.clear()
+        st.rerun()
+else:
+    st.sidebar.caption("Sem chaves IGDB — vê o README para capas de jogos.")
+
 # ── build query ────────────────────────────────────────────────────────────
 where, params = ["1=1"], []
 if sel_types:
