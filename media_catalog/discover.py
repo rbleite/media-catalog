@@ -86,10 +86,11 @@ MOVIE_ROOTS: list[str] = [
     "Ricardo/Divx",
     "Ricardo/Disney.Home.Collection.PORTUGUESE.DVDRip.Fox-dh",
     "Air2/Movies",
-    # nested backups of older drives (mixed media)
-    "Ricardo/2Tb",
-    "Ricardo/Passport1G",
-    "Ricardo/WD500",
+    # NB: the nested drive backups (Ricardo/2Tb, Passport1G, WD500) are
+    # deliberately NOT movie roots — they're full-drive backups full of home
+    # videos / work files, which polluted the movie catalog (19% TMDB match vs
+    # 59% on the curated folders). They ARE kept in MUSIC_ROOTS below, where the
+    # MP3/Artist/Album structure is clean.
 ]
 MUSIC_ROOTS: list[str] = [
     "MP3",
