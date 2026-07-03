@@ -4,3 +4,5 @@ catalog.db
 catalog.db-*
 covers/
 .venv/
+secrets.json
+.env

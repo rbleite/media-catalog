@@ -1,0 +1,159 @@
+"""TMDB enrichment for movies — search by title(+year), attach poster, year,
+overview, genres, rating. Responses are cached in enrich_cache; posters are
+downloaded once into COVERS_DIR. stdlib-only (urllib) to avoid a hard dep.
+"""
+from __future__ import annotations
+
+import datetime
+import json
+import sqlite3
+import time
+import urllib.parse
+import urllib.request
+from pathlib import Path
+
+from media_catalog import config
+
+_API = "https://api.themoviedb.org/3"
+_UA = {"User-Agent": "media-catalog/0.1 (+personal)"}
+_genre_map: dict[int, str] | None = None
+
+
+def _http_json(url: str) -> dict | None:
+    try:
+        req = urllib.request.Request(url, headers=_UA)
+        with urllib.request.urlopen(req, timeout=20) as r:
+            return json.loads(r.read().decode("utf-8"))
+    except Exception:
+        return None
+
+
+def _cache_get(conn: sqlite3.Connection, key: str) -> dict | None:
+    row = conn.execute(
+        "SELECT response FROM enrich_cache WHERE provider='tmdb' AND key=?",
+        (key,),
+    ).fetchone()
+    if row and row[0]:
+        try:
+            return json.loads(row[0])
+        except Exception:
+            return None
+    return None
+
+
+def _cache_put(conn: sqlite3.Connection, key: str, payload: dict) -> None:
+    now = datetime.datetime.now().isoformat(timespec="seconds")
+    conn.execute(
+        "INSERT OR REPLACE INTO enrich_cache (provider, key, response, fetched_at)"
+        " VALUES ('tmdb', ?, ?, ?)",
+        (key, json.dumps(payload), now),
+    )
+
+
+def _genres(api_key: str) -> dict[int, str]:
+    global _genre_map
+    if _genre_map is None:
+        data = _http_json(f"{_API}/genre/movie/list?api_key={api_key}&language=en-US")
+        _genre_map = {g["id"]: g["name"] for g in (data or {}).get("genres", [])}
+    return _genre_map
+
+
+def search_movie(conn: sqlite3.Connection, title: str, year: int | None,
+                 api_key: str) -> dict | None:
+    """Return the best TMDB match (cached). None if nothing found."""
+    key = f"search|{title.lower()}|{year or ''}"
+    cached = _cache_get(conn, key)
+    if cached is not None:
+        return cached or None  # {} cached = known-miss
+    q = urllib.parse.quote(title)
+    url = f"{_API}/search/movie?api_key={api_key}&query={q}"
+    if year:
+        url += f"&year={year}"
+    data = _http_json(url)
+    results = (data or {}).get("results") or []
+    best = results[0] if results else {}
+    _cache_put(conn, key, best)
+    conn.commit()
+    return best or None
+
+
+def _norm(s: str) -> str:
+    import re
+    return re.sub(r"[^a-z0-9]", "", (s or "").lower())
+
+
+def _acceptable(best: dict, title: str, year: int | None) -> bool:
+    """Reject TMDB false positives. Year is the strong signal: when the folder
+    has a year, require the release year within ±1. Year-less folders (often
+    home videos) must match the title exactly once normalised — this culls the
+    'Ricardo'/'Marta' junk that otherwise matches obscure films."""
+    rel = best.get("release_date") or ""
+    by = int(rel[:4]) if rel[:4].isdigit() else None
+    if year:
+        return by is not None and abs(by - year) <= 1
+    return _norm(best.get("title")) == _norm(title) and len(_norm(title)) >= 4
+
+
+def _download_cover(poster_path: str, work_id: int) -> str | None:
+    config.COVERS_DIR.mkdir(parents=True, exist_ok=True)
+    dest = config.COVERS_DIR / f"movie_{work_id}.jpg"
+    if dest.exists():
+        return str(dest)
+    try:
+        req = urllib.request.Request(config.TMDB_IMG + poster_path, headers=_UA)
+        with urllib.request.urlopen(req, timeout=30) as r:
+            dest.write_bytes(r.read())
+        return str(dest)
+    except Exception:
+        return None
+
+
+def enrich_movies(conn: sqlite3.Connection, api_key: str,
+                  limit: int | None = None, sleep: float = 0.05,
+                  progress=None) -> dict:
+    """Enrich un-enriched movie works. Returns {matched, missed, total}."""
+    rows = conn.execute(
+        "SELECT id, title, year FROM works"
+        " WHERE type='movie' AND enriched=0"
+        + (f" LIMIT {int(limit)}" if limit else "")
+    ).fetchall()
+    genres = _genres(api_key)
+    matched = missed = 0
+    now = datetime.datetime.now().isoformat(timespec="seconds")
+    for i, (wid, title, year) in enumerate(rows):
+        best = search_movie(conn, title, year, api_key)
+        if best and best.get("id") and _acceptable(best, title, year):
+            poster = best.get("poster_path")
+            cover = _download_cover(poster, wid) if poster else None
+            gnames = ", ".join(
+                genres.get(g, "") for g in (best.get("genre_ids") or [])
+            ).strip(", ")
+            rel = best.get("release_date") or ""
+            byear = int(rel[:4]) if rel[:4].isdigit() else year
+            conn.execute(
+                "UPDATE works SET title=?, year=?, genre=?, cover_path=?,"
+                " identifier=?, provider='tmdb', enriched=1, extra_json=?,"
+                " updated_at=? WHERE id=?",
+                (best.get("title") or title, byear, gnames or None, cover,
+                 f"tmdb:{best['id']}", json.dumps({
+                     "overview": best.get("overview"),
+                     "vote_average": best.get("vote_average"),
+                     "poster_path": poster,
+                 }), now, wid),
+            )
+            matched += 1
+        else:
+            conn.execute(
+                "UPDATE works SET enriched=1, provider='tmdb-miss', updated_at=?"
+                " WHERE id=?", (now, wid))
+            missed += 1
+        if i % 20 == 0:
+            conn.commit()
+            if progress:
+                progress(i + 1, len(rows), matched, missed)
+        if sleep:
+            time.sleep(sleep)
+    conn.commit()
+    if progress:
+        progress(len(rows), len(rows), matched, missed)
+    return {"matched": matched, "missed": missed, "total": len(rows)}

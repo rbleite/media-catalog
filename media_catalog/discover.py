@@ -116,29 +116,39 @@ def _basename(rel: str) -> str:
 
 
 _YEAR_RE = re.compile(r"(?:19|20)\d{2}")
+# release / quality / source tags — everything from the first one on is junk
+_TAG_RE = re.compile(
+    r"\b(?:1080p|720p|480p|2160p|4k|uhd|bluray|blu-ray|brrip|bdrip|dvdrip|"
+    r"dvdscr|hdrip|webrip|web-dl|webdl|hdtv|hdts|x264|x265|h264|h265|hevc|"
+    r"xvid|divx|ac3|aac|dts|cam|ts|r5|line|remux|proper|repack|internal|"
+    r"limited|unrated|extended|remastered|multi|dual|dublado|legendado)\b",
+    re.I,
+)
 
 
 def _clean_movie_title(name: str) -> tuple[str, int | None]:
     """Parse a release name into (title, year). Uses the LAST plausible year
-    so a title that contains a number ('2001 A Space Odyssey 1968 720p') keeps
-    the number in the title and picks 1968 as the year. Release tags after the
-    year are dropped. Good enough for a TMDB search to disambiguate.
-    """
+    so a title containing a number ('2001 A Space Odyssey 1968 720p') keeps the
+    number and picks 1968. Everything from the first release/quality tag on is
+    dropped. Good enough for a TMDB search to disambiguate."""
     stem = name
-    for ext in (".mkv", ".mp4", ".avi", ".m4v"):
+    for ext in (".mkv", ".mp4", ".avi", ".m4v", ".mov", ".wmv"):
         if stem.lower().endswith(ext):
             stem = stem[: -len(ext)]
             break
-    years = list(_YEAR_RE.finditer(stem))
+    spaced = re.sub(r"[._]+", " ", stem)
+    years = list(_YEAR_RE.finditer(spaced))
     if years:
         last = years[-1]
         year = int(last.group(0))
-        title = stem[: last.start()]
+        title = spaced[: last.start()]
     else:
-        year, title = None, stem
-    title = re.sub(r"[._]+", " ", title)
+        year, title = None, spaced
+        tag = _TAG_RE.search(title)      # no year → still cut at first tag
+        if tag:
+            title = title[: tag.start()]
     title = re.sub(r"\s+", " ", title).strip(" -[]()")
-    return (title or stem), year
+    return (title or spaced), year
 
 
 def scan_index(db_path: Path, label: str,
