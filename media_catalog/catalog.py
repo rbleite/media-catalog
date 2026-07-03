@@ -56,9 +56,12 @@ CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT);
 DEFAULT_CATALOG = Path.home() / "tools" / "media-catalog" / "catalog.db"
 
 
-def open_catalog(path: Path = DEFAULT_CATALOG) -> sqlite3.Connection:
+def open_catalog(path: Path = DEFAULT_CATALOG,
+                 check_same_thread: bool = True) -> sqlite3.Connection:
+    # Streamlit reruns the script across worker threads, so the gallery opens
+    # with check_same_thread=False to share one cached connection safely.
     path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path)
+    conn = sqlite3.connect(path, check_same_thread=check_same_thread)
     conn.executescript(SCHEMA)
     conn.execute(
         "INSERT OR IGNORE INTO meta (k, v) VALUES ('schema_version', ?)",

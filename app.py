@@ -35,7 +35,9 @@ def human(n: int | None) -> str:
 
 @st.cache_resource
 def _conn() -> sqlite3.Connection:
-    return C.open_catalog(C.DEFAULT_CATALOG)
+    # check_same_thread=False: Streamlit serves reruns from a thread pool, so
+    # the single cached connection must be usable across threads.
+    return C.open_catalog(C.DEFAULT_CATALOG, check_same_thread=False)
 
 
 conn = _conn()
