@@ -155,6 +155,26 @@ if st.sidebar.button("🔄 Atualizar catálogo (reler drives)",
     st.cache_resource.clear()
     st.rerun()
 
+with st.sidebar.expander("🔄 Atualizações (GitHub)", expanded=False):
+    import update as _upd
+    if st.button("Verificar atualizações", key="upd_check", use_container_width=True):
+        st.session_state["upd_status"] = _upd.check_updates()
+    _us = st.session_state.get("upd_status")
+    if _us:
+        if not _us.get("ok"):
+            st.warning(_us.get("error"))
+        elif _us["behind"] == 0:
+            st.success("✅ Estás na versão mais recente.")
+        else:
+            st.info(f"🆕 {_us['behind']} atualização(ões):")
+            for _c in _us["commits"][:8]:
+                st.caption(f"• {_c}")
+            if st.button("⬇️ Atualizar agora", type="primary", key="upd_apply"):
+                with st.spinner("A atualizar…"):
+                    _r = _upd.apply_update()
+                (st.success if _r.get("ok") else st.error)(_r.get("message"))
+                st.session_state.pop("upd_status", None)
+
 # ── build query ────────────────────────────────────────────────────────────
 where, params = ["1=1"], []
 if not show_hidden:
