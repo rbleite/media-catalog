@@ -106,6 +106,19 @@ if config.has_igdb():
 else:
     st.sidebar.caption("Sem chaves IGDB — vê o README para capas de jogos.")
 
+_pa = conn.execute(
+    "SELECT COUNT(*) FROM works WHERE type='album' AND enriched=0").fetchone()[0]
+if st.sidebar.button(f"💿 Enriquecer álbuns via MusicBrainz ({_pa} por fazer)",
+                     disabled=_pa == 0):
+    from media_catalog.enrich import musicbrainz as _mb
+    prog = st.sidebar.progress(0.0, text="A enriquecer… (~1s/álbum)")
+    def _cba(i, n, m, ms):
+        prog.progress(i / max(n, 1), text=f"{i}/{n} · {m} capas")
+    res = _mb.enrich_albums(conn, progress=_cba)
+    st.sidebar.success(f"✓ {res['matched']} capas · {res['missed']} sem match")
+    st.cache_resource.clear()
+    st.rerun()
+
 # ── build query ────────────────────────────────────────────────────────────
 where, params = ["1=1"], []
 if sel_types:
