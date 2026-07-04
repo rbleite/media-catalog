@@ -6,3 +6,4 @@ covers/
 .venv/
 secrets.json
 .env
+data/
