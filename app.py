@@ -127,13 +127,13 @@ if st.sidebar.button(f"💿 Enriquecer álbuns via MusicBrainz ({_pa} por fazer)
 
 _pai = conn.execute(
     "SELECT COUNT(*) FROM works WHERE type='album' AND cover_path IS NULL").fetchone()[0]
-if st.sidebar.button(f"💿 Capas em falta via iTunes ({_pai})", disabled=_pai == 0):
-    from media_catalog.enrich import itunes as _it
+if st.sidebar.button(f"💿 Capas em falta via Deezer ({_pai})", disabled=_pai == 0):
+    from media_catalog.enrich import deezer as _dz
     prog = st.sidebar.progress(0.0, text="A procurar capas…")
     def _cbi(i, n, m, ms):
         prog.progress(i / max(n, 1), text=f"{i}/{n} · {m} capas")
-    res = _it.enrich_albums(conn, progress=_cbi)
-    st.sidebar.success(f"✓ +{res['matched']} capas iTunes")
+    res = _dz.enrich_albums(conn, progress=_cbi)
+    st.sidebar.success(f"✓ +{res['matched']} capas Deezer")
     st.cache_resource.clear()
     st.rerun()
 

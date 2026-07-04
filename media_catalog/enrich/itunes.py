@@ -20,6 +20,30 @@ def _norm(s: str) -> str:
     return re.sub(r"[^a-z0-9]", "", (s or "").lower())
 
 
+_ALBUM_JUNK = re.compile(
+    r"\s*[\(\[](?:remaster(?:ed)?|deluxe|expanded|bonus[^\)\]]*|advance|"
+    r"special|anniversary|edition|explicit|mono|stereo|flac|\d{4})[^\)\]]*[\)\]]",
+    re.I)
+_DISC_RE = re.compile(r"\s*[-–]?\s*\b(?:cd|disc|disco)\s*\d*\b\s*$", re.I)
+_GENERIC_ARTIST = {"a minha música", "old photos", "various", "va", "v.a",
+                   "v.a.", "unknown", "unknown artist"}
+
+
+def clean_album(artist: str | None, album: str) -> tuple[str, str]:
+    """Normalise messy folder-derived names before searching: strip
+    (Remastered)/[Flac]/CD-N/year junk, and when the 'artist' is a generic
+    folder ('A minha música'…) recover 'RealArtist - RealAlbum' from the title."""
+    a, al = (artist or "").strip(), (album or "").strip()
+    if a.lower() in _GENERIC_ARTIST and " - " in al:
+        p = al.split(" - ", 1)
+        a, al = p[0].strip(), p[1].strip()
+    al = _ALBUM_JUNK.sub("", al)
+    al = _DISC_RE.sub("", al)
+    al = re.sub(r"^\d{4}[\s\-]+", "", al)          # leading "1999-"
+    al = re.sub(r"\s+", " ", al).strip(" -–")
+    return a, al
+
+
 def _http_json(url: str) -> dict | None:
     try:
         req = urllib.request.Request(url, headers={"User-Agent": _UA})
@@ -99,6 +123,10 @@ def enrich_albums(conn, limit: int | None = None, sleep: float = 0.3,
     matched = missed = 0
     now = datetime.datetime.now().isoformat(timespec="seconds")
     for i, (wid, album, artist) in enumerate(rows):
+        artist, album = clean_album(artist, album)
+        if not album or album.lower() in ("unknown album", "unknown"):
+            missed += 1
+            continue
         r = search_album(conn, artist, album)
         cover = _download_cover(r["artworkUrl100"], wid) \
             if r and r.get("artworkUrl100") else None
