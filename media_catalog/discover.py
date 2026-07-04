@@ -25,9 +25,11 @@ AUDIO_EXT = {
 }
 # rom / disc-image containers that stand for a whole game
 GAME_FILE_EXT = {
-    "iso", "nsp", "xci", "wbfs", "rvz", "wad", "cso", "chd", "pkg",
-    "gb", "gba", "gbc", "nds", "3ds", "z64", "n64", "v64", "nes",
-    "sfc", "smc", "gcm", "rpx", "wux", "bin", "cue",
+    "iso", "nsp", "xci", "nsz", "xcz", "wbfs", "rvz", "wad", "cso", "chd",
+    "pkg", "gb", "gba", "gbc", "nds", "3ds", "z64", "n64", "v64", "nes",
+    "sfc", "smc", "gcm", "rpx", "wux",
+    # ROMs are frequently stored compressed under the console folders
+    "zip", "7z", "rar",
 }
 
 # --- title-id → platform --------------------------------------------------
@@ -61,6 +63,27 @@ def titleid_and_name(folder_name: str) -> tuple[str | None, str]:
     return tid, rest
 
 
+# Switch/3DS title-id: 16 hex in brackets, e.g. [010099C022B96000]
+_ROM_ID_RE = re.compile(r"\[([0-9A-Fa-f]{16})\]")
+# common site/scene prefixes in ROM filenames
+_SITE_RE = re.compile(r"^\s*\[[^\]]*(?:\.com|nsw|romsns|ziperto)[^\]]*\]\s*", re.I)
+
+
+def clean_rom_name(filename: str) -> tuple[str, str | None]:
+    """ROM filename -> (clean title, title-id or None). Handles the
+    'Name [0100…][v0][US](site).nsp' scene layout: title is the text before the
+    first [ or (, the 16-hex id is extracted, version/region/site tags dropped."""
+    stem = filename.rsplit(".", 1)[0]
+    stem = _SITE_RE.sub("", stem)                    # drop a leading [site] tag
+    mid = _ROM_ID_RE.search(stem)
+    tid = mid.group(1).upper() if mid else None
+    title = re.split(r"[\[\(]", stem)[0]             # cut at first [ or (
+    title = re.sub(r"\s*-?\s*v\d+(?:\.\d+)*\s*$", "", title)  # trailing version
+    title = re.sub(r"[._]+", " ", title)
+    title = re.sub(r"\s+", " ", title).strip(" -")
+    return (title or stem), tid
+
+
 # --- games layout ---------------------------------------------------------
 # (path prefix, platform, unit): 'folder' = each direct sub-dir is one game;
 # 'file' = each direct file is one game. Matches the 8Tb layout; extend freely.
@@ -68,6 +91,8 @@ GAME_ROOTS: list[tuple[str, str, str]] = [
     ("M2/FuncionaisISO", "PS3", "folder"),
     ("PS4", "PS4", "folder"),
     ("Consolas/ROMS/Switch", "Switch", "file"),
+    ("Switch", "Switch", "file"),          # 6Tb top-level Switch collection
+    ("M2/Switch", "Switch", "file"),       # 8Tb
     ("Consolas/ROMS/Wii", "Wii", "file"),
     ("Consolas/ROMS/WiiU", "WiiU", "file"),
     ("Consolas/ROMS/PS2", "PS2", "file"),
@@ -189,8 +214,8 @@ def scan_index(db_path: Path, label: str,
     file_games: list[dict] = []
     for rel, is_dir, size in rows:
         base = _basename(rel)
-        if base.lower() in _SKIP_NAMES:
-            continue
+        if base.lower() in _SKIP_NAMES or base.startswith("._"):
+            continue  # macOS AppleDouble sidecars (._foo) are not titles
         hit = under_game_root(rel)
         if hit:
             prefix, platform, unit = hit
@@ -207,10 +232,13 @@ def scan_index(db_path: Path, label: str,
                     "drive_label": label, "size_bytes": 0,
                 }
             elif unit == "file" and not is_dir and is_direct:
+                if _ext(base) not in GAME_FILE_EXT:
+                    continue  # skip .rar/.zip/sigpatches/etc under a rom root
+                title, tid = clean_rom_name(base)
                 file_games.append({
                     "type": "game", "platform": platform,
-                    "title": base.rsplit(".", 1)[0], "title_raw": base,
-                    "identifier": None, "rel_path": rel,
+                    "title": title, "title_raw": base,
+                    "identifier": tid, "rel_path": rel,
                     "drive_label": label, "size_bytes": size,
                 })
             continue
