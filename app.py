@@ -7,7 +7,10 @@ tells you which drive each title is on, and can enrich movies via TMDB.
 """
 from __future__ import annotations
 
+import re
 import sqlite3
+import subprocess
+import sys
 from pathlib import Path
 
 import streamlit as st
@@ -71,6 +74,9 @@ else:
     yr_range = None
 
 only_cover = st.sidebar.checkbox("Só com capa", value=False)
+dedup = st.sidebar.checkbox("🔀 Ocultar duplicados", value=False,
+                            help="Colapsa o mesmo título repetido em várias "
+                                 "drives/pastas numa só entrada (×N).")
 
 # ── TMDB enrichment control ────────────────────────────────────────────────
 st.sidebar.divider()
@@ -119,6 +125,23 @@ if st.sidebar.button(f"💿 Enriquecer álbuns via MusicBrainz ({_pa} por fazer)
     st.cache_resource.clear()
     st.rerun()
 
+# ── maintenance: re-scan the drive-xray indexes for new titles ─────────────
+st.sidebar.divider()
+st.sidebar.caption("**Manutenção**")
+if st.sidebar.button("🔄 Atualizar catálogo (reler drives)",
+                     help="Relê os índices do drive-xray e adiciona títulos "
+                          "novos. Refresca a drive no drive-xray primeiro."):
+    with st.spinner("A reler as drives indexadas…"):
+        p = subprocess.run(
+            [sys.executable, str(Path(__file__).parent / "mediacat.py"), "scan"],
+            capture_output=True, text=True)
+    if p.returncode == 0:
+        st.sidebar.success("Catálogo atualizado. Enriquece os novos títulos.")
+    else:
+        st.sidebar.error((p.stderr or "erro")[:300])
+    st.cache_resource.clear()
+    st.rerun()
+
 # ── build query ────────────────────────────────────────────────────────────
 where, params = ["1=1"], []
 if sel_types:
@@ -140,37 +163,67 @@ if only_cover:
     where.append("cover_path IS NOT NULL")
 
 sql = ("SELECT id, type, title, artist, year, platform, size_bytes,"
-       " drive_label, rel_path, cover_path, genre"
+       " drive_label, rel_path, cover_path, genre, identifier"
        f" FROM works WHERE {' AND '.join(where)}"
        " ORDER BY (cover_path IS NULL), type, title")
 rows = conn.execute(sql, params).fetchall()
+
+
+def _dup_key(r) -> str:
+    """Identity of a title across drives: the canonical enriched id when we
+    have one, else type + normalised title + (year/platform/artist)."""
+    ident = r[11]
+    if ident and ident.split(":", 1)[0] in ("tmdb", "igdb", "mbid"):
+        return ident
+    norm = re.sub(r"[^a-z0-9]", "", (r[2] or "").lower())
+    return f"{r[1]}|{norm}|{r[4] or r[5] or r[3] or ''}"
+
+
+# each item = (representative_row, copies) where copies = [(drive, rel), …]
+if dedup:
+    groups: dict[str, list] = {}
+    for r in rows:
+        groups.setdefault(_dup_key(r), []).append(r)
+    items = []
+    for grp in groups.values():
+        rep = next((x for x in grp if x[9]), grp[0])  # prefer one with a cover
+        copies = [(x[7], x[8]) for x in grp]
+        items.append((rep, copies))
+    # keep the cover-first / type / title ordering of the representatives
+    items.sort(key=lambda it: (it[0][9] is None, it[0][1], (it[0][2] or "").lower()))
+else:
+    items = [(r, [(r[7], r[8])]) for r in rows]
 
 # ── header metrics ─────────────────────────────────────────────────────────
 st.title("🎬 Media Catalog")
 by_type: dict[str, int] = {}
 total_size = 0
-for r in rows:
-    by_type[r[1]] = by_type.get(r[1], 0) + 1
-    total_size += r[6] or 0
+for rep, copies in items:
+    by_type[rep[1]] = by_type.get(rep[1], 0) + 1
+    total_size += rep[6] or 0
 mcols = st.columns(4)
-mcols[0].metric("Resultados", f"{len(rows):,}")
+mcols[0].metric("Resultados", f"{len(items):,}"
+                + (f" (de {len(rows):,})" if dedup and len(items) != len(rows) else ""))
 mcols[1].metric("🎮 Jogos", f"{by_type.get('game', 0):,}")
 mcols[2].metric("🎬 Filmes", f"{by_type.get('movie', 0):,}")
 mcols[3].metric("💿 Álbuns", f"{by_type.get('album', 0):,}")
-st.caption(f"Tamanho total filtrado: **{human(total_size)}**  ·  "
-           f"{sum(1 for r in rows if r[9])} com capa")
+_cap = f"Tamanho total: **{human(total_size)}**  ·  {sum(1 for it in items if it[0][9])} com capa"
+if dedup and len(items) != len(rows):
+    _cap += f"  ·  🔀 {len(rows) - len(items)} duplicados ocultados"
+st.caption(_cap)
 
 # ── pagination ─────────────────────────────────────────────────────────────
 PER_PAGE = 60
-n_pages = max(1, (len(rows) + PER_PAGE - 1) // PER_PAGE)
+n_pages = max(1, (len(items) + PER_PAGE - 1) // PER_PAGE)
 page = st.number_input("Página", 1, n_pages, 1, step=1) if n_pages > 1 else 1
-page_rows = rows[(page - 1) * PER_PAGE: page * PER_PAGE]
+page_items = items[(page - 1) * PER_PAGE: page * PER_PAGE]
 
 # ── card grid ──────────────────────────────────────────────────────────────
 NCOL = 6
 cols = st.columns(NCOL)
-for i, r in enumerate(page_rows):
-    (wid, typ, title, artist, year, platform, size, drive, rel, cover, genre) = r
+for i, (r, copies) in enumerate(page_items):
+    (wid, typ, title, artist, year, platform, size, drive, rel, cover, genre, ident) = r
+    n_copies = len(copies)
     with cols[i % NCOL]:
         if cover and Path(cover).exists():
             st.image(cover, use_container_width=True)
@@ -180,15 +233,20 @@ for i, r in enumerate(page_rows):
                 f'height:210px;border-radius:8px;display:flex;align-items:center;'
                 f'justify-content:center;font-size:3em">{TYPE_EMOJI.get(typ,"?")}</div>',
                 unsafe_allow_html=True)
+        badge = f"  `×{n_copies}`" if n_copies > 1 else ""
+        st.markdown(f"**{(title or '')[:40]}**{badge}")
         sub = artist or platform or (str(year) if year else "")
-        st.markdown(f"**{(title or '')[:40]}**")
         line = " · ".join(x for x in [sub, str(year) if (year and sub != str(year)) else "",
                                       human(size)] if x)
         st.caption(line)
-        st.caption(f"📀 {drive}")
-        with st.popover("onde está"):
-            st.write(f"**Drive:** {drive}")
-            st.code(rel, language=None)
+        _drv = ", ".join(sorted({d for d, _ in copies}))
+        st.caption(f"📀 {_drv}")
+        with st.popover(f"onde está ({n_copies})" if n_copies > 1 else "onde está"):
+            if genre:
+                st.write(f"**Género:** {genre}")
+            for d, rp in copies:
+                st.write(f"**{d}**")
+                st.code(rp, language=None)
             if genre:
                 st.write(f"**Género:** {genre}")
 
