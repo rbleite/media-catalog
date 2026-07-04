@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import datetime
 import json
+import re
 import sqlite3
 import time
 import urllib.parse
@@ -92,6 +93,33 @@ def _acceptable(best: dict, title: str, year: int | None) -> bool:
     if year:
         return by is not None and abs(by - year) <= 1
     return _norm(best.get("title")) == _norm(title) and len(_norm(title)) >= 4
+
+
+_IMDB_RE = re.compile(r"tt\d{6,}")
+
+
+def imdb_id_for(conn: sqlite3.Connection, tmdb_id: str | int,
+                api_key: str) -> str | None:
+    """The IMDb id (tt…) for a TMDB movie, fetched on demand and cached."""
+    key = f"imdb|{tmdb_id}"
+    cached = _cache_get(conn, key)
+    if cached is not None:
+        return (cached or {}).get("imdb_id")
+    data = _http_json(f"{_API}/movie/{tmdb_id}/external_ids?api_key={api_key}") or {}
+    _cache_put(conn, key, data)
+    conn.commit()
+    return data.get("imdb_id")
+
+
+def find_by_imdb(imdb: str, api_key: str) -> dict | None:
+    """Resolve an IMDb id or URL (tt…) to the matching TMDB movie."""
+    m = _IMDB_RE.search(imdb or "")
+    if not m:
+        return None
+    data = _http_json(f"{_API}/find/{m.group(0)}?api_key={api_key}"
+                      "&external_source=imdb_id")
+    res = (data or {}).get("movie_results") or []
+    return res[0] if res else None
 
 
 def search_candidates(title: str, year: int | None, api_key: str,

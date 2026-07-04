@@ -290,6 +290,16 @@ def show_detail(wid):
             except Exception:
                 pass
         st.caption(f"Fonte: `{provider or '—'}`  ·  `{ident or ''}`")
+        # external links (movies) — explore on TMDB / IMDb
+        if typ == "movie" and ident and ident.startswith("tmdb:"):
+            tmdb_id = ident.split(":", 1)[1]
+            links = [f"[TMDB](https://www.themoviedb.org/movie/{tmdb_id})"]
+            if config.has_tmdb():
+                from media_catalog.enrich import tmdb as _t
+                _imdb = _t.imdb_id_for(conn, tmdb_id, config.get("tmdb_api_key"))
+                if _imdb:
+                    links.insert(0, f"**[▶ IMDb](https://www.imdb.com/title/{_imdb}/)**")
+            st.markdown("🔗 " + "  ·  ".join(links))
 
     sibs = _sibling_ids(wid, typ, title, ident)
     st.markdown(f"**Cópias ({len(sibs)}):**")
@@ -357,6 +367,20 @@ def show_detail(wid):
                     deezer.apply_candidate(conn, sid, c)
             st.cache_resource.clear()
             st.rerun()
+
+    # precise correction by IMDb id/URL (movies)
+    if typ == "movie" and config.has_tmdb():
+        ic1, ic2 = st.columns([3, 1])
+        imdb_in = ic1.text_input("…ou corrigir por IMDb (tt… ou link)", key=f"imdb_{wid}")
+        if ic2.button("usar IMDb", key=f"imdbgo_{wid}") and imdb_in.strip():
+            from media_catalog.enrich import tmdb as _t
+            best = _t.find_by_imdb(imdb_in.strip(), config.get("tmdb_api_key"))
+            if best:
+                for sid in tgt:
+                    _t.apply_candidate(conn, sid, best, config.get("tmdb_api_key"))
+                st.cache_resource.clear(); st.rerun()
+            else:
+                st.error("IMDb não encontrado nesse ID/URL.")
 
     st.divider()
     mc1, mc2 = st.columns([3, 1])
