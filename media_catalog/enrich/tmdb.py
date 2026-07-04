@@ -94,6 +94,37 @@ def _acceptable(best: dict, title: str, year: int | None) -> bool:
     return _norm(best.get("title")) == _norm(title) and len(_norm(title)) >= 4
 
 
+def search_candidates(title: str, year: int | None, api_key: str,
+                      lang: str = "en-US") -> list:
+    """Top TMDB matches for the manual picker (uncached — interactive)."""
+    url = (f"{_API}/search/movie?api_key={api_key}"
+           f"&query={urllib.parse.quote(title)}&language={lang}")
+    if year:
+        url += f"&year={year}"
+    return ((_http_json(url) or {}).get("results") or [])[:6]
+
+
+def apply_candidate(conn: sqlite3.Connection, work_id: int, best: dict,
+                    api_key: str) -> None:
+    """Apply a user-picked TMDB result to a work (download cover, mark manual)."""
+    poster = best.get("poster_path")
+    cover = _download_cover(poster, work_id) if poster else None
+    genres = _genres(api_key)
+    gnames = ", ".join(genres.get(g, "") for g in (best.get("genre_ids") or [])).strip(", ")
+    rel = best.get("release_date") or ""
+    now = datetime.datetime.now().isoformat(timespec="seconds")
+    conn.execute(
+        "UPDATE works SET title=?, year=?, genre=?, cover_path=COALESCE(?, cover_path),"
+        " identifier=?, provider='tmdb', enriched=1, manual=1, extra_json=?,"
+        " updated_at=? WHERE id=?",
+        (best.get("title"), int(rel[:4]) if rel[:4].isdigit() else None,
+         gnames or None, cover, f"tmdb:{best['id']}",
+         json.dumps({"overview": best.get("overview"),
+                     "vote_average": best.get("vote_average"),
+                     "poster_path": poster}), now, work_id))
+    conn.commit()
+
+
 def _download_cover(poster_path: str, work_id: int) -> str | None:
     config.COVERS_DIR.mkdir(parents=True, exist_ok=True)
     dest = config.COVERS_DIR / f"movie_{work_id}.jpg"

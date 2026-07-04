@@ -74,9 +74,10 @@ else:
     yr_range = None
 
 only_cover = st.sidebar.checkbox("Só com capa", value=False)
-dedup = st.sidebar.checkbox("🔀 Ocultar duplicados", value=False,
+dedup = st.sidebar.checkbox("🔀 Ocultar duplicados", value=True,
                             help="Colapsa o mesmo título repetido em várias "
                                  "drives/pastas numa só entrada (×N).")
+show_hidden = st.sidebar.checkbox("🚫 Mostrar ocultos", value=False)
 
 # ── TMDB enrichment control ────────────────────────────────────────────────
 st.sidebar.divider()
@@ -156,6 +157,8 @@ if st.sidebar.button("🔄 Atualizar catálogo (reler drives)",
 
 # ── build query ────────────────────────────────────────────────────────────
 where, params = ["1=1"], []
+if not show_hidden:
+    where.append("COALESCE(hidden,0)=0")
 if sel_types:
     where.append("type IN (%s)" % ",".join("?" * len(sel_types)))
     params += sel_types
@@ -230,6 +233,149 @@ n_pages = max(1, (len(items) + PER_PAGE - 1) // PER_PAGE)
 page = st.number_input("Página", 1, n_pages, 1, step=1) if n_pages > 1 else 1
 page_items = items[(page - 1) * PER_PAGE: page * PER_PAGE]
 
+# ── detail + manual correction dialog ──────────────────────────────────────
+def _sibling_ids(wid, typ, title, ident):
+    if ident and ident.split(":", 1)[0] in ("tmdb", "igdb", "mbid"):
+        rs = conn.execute("SELECT id FROM works WHERE identifier=?", (ident,)).fetchall()
+    else:
+        rs = conn.execute("SELECT id FROM works WHERE type=? AND lower(title)=lower(?)",
+                          (typ, title or "")).fetchall()
+    return [x[0] for x in rs] or [wid]
+
+
+def _manual_cover_from_url(wid, typ, url):
+    import urllib.request
+    dest = config.COVERS_DIR / f"{typ}_{wid}.jpg"
+    config.COVERS_DIR.mkdir(parents=True, exist_ok=True)
+    req = urllib.request.Request(url, headers={"User-Agent": "media-catalog/0.1"})
+    with urllib.request.urlopen(req, timeout=30) as r:
+        data = r.read()
+    dest.write_bytes(data)
+    conn.execute("UPDATE works SET cover_path=?, manual=1, updated_at=datetime('now')"
+                 " WHERE id=?", (str(dest), wid))
+    conn.commit()
+
+
+@st.dialog("Detalhe", width="large")
+def show_detail(wid):
+    import json as _json
+    w = conn.execute(
+        "SELECT id,type,title,artist,year,platform,genre,size_bytes,cover_path,"
+        "identifier,provider,extra_json FROM works WHERE id=?", (wid,)).fetchone()
+    if not w:
+        st.write("—"); return
+    (_id, typ, title, artist, year, platform, genre, size, cover, ident,
+     provider, extra) = w
+    c1, c2 = st.columns([1, 2])
+    with c1:
+        if cover and Path(cover).exists():
+            st.image(cover, use_container_width=True)
+        else:
+            st.markdown(f'<div style="background:{PLACEHOLDER_BG.get(typ,"#333")};'
+                        f'height:260px;border-radius:8px;display:flex;'
+                        f'align-items:center;justify-content:center;font-size:4em">'
+                        f'{TYPE_EMOJI.get(typ,"?")}</div>', unsafe_allow_html=True)
+    with c2:
+        st.markdown(f"### {title}")
+        meta = " · ".join(str(x) for x in [TYPE_LABEL.get(typ, typ), platform,
+                          artist, year, genre, human(size)] if x)
+        st.caption(meta)
+        if extra:
+            try:
+                d = _json.loads(extra)
+                if d.get("overview"):
+                    st.write(d["overview"])
+                if d.get("vote_average"):
+                    st.caption(f"⭐ {d['vote_average']}")
+            except Exception:
+                pass
+        st.caption(f"Fonte: `{provider or '—'}`  ·  `{ident or ''}`")
+
+    sibs = _sibling_ids(wid, typ, title, ident)
+    st.markdown(f"**Cópias ({len(sibs)}):**")
+    for sid in sibs:
+        d, rp = conn.execute("SELECT drive_label, rel_path FROM works WHERE id=?",
+                             (sid,)).fetchone()
+        st.caption(f"📀 **{d}** · `{rp}`")
+
+    st.divider()
+    st.markdown("**✏️ Corrigir**")
+    apply_all = st.checkbox(f"Aplicar a todas as cópias ({len(sibs)})",
+                            value=len(sibs) > 1, key=f"aa_{wid}")
+    tgt = sibs if apply_all else [wid]
+
+    qc1, qc2 = st.columns([3, 1])
+    dq = qc1.text_input("Procurar título certo", value=title or "", key=f"q_{wid}")
+    lang = "en-US"
+    if typ == "movie":
+        lang = "pt-PT" if qc2.checkbox("PT", key=f"pt_{wid}") else "en-US"
+
+    if st.button("🔍 Procurar", key=f"go_{wid}"):
+        cands = []
+        try:
+            if typ == "movie" and config.has_tmdb():
+                from media_catalog.enrich import tmdb
+                cands = [("tmdb", c) for c in
+                         tmdb.search_candidates(dq, None, config.get("tmdb_api_key"), lang)]
+            elif typ == "game" and config.has_igdb():
+                from media_catalog.enrich import igdb
+                tok = igdb.get_token()
+                cands = [("igdb", c) for c in
+                         igdb.search_candidates(dq, config.get("igdb_client_id"), tok)]
+            elif typ == "album":
+                from media_catalog.enrich import deezer
+                cands = [("deezer", c) for c in deezer.search_candidates(artist or "", dq)]
+        except Exception as e:
+            st.error(str(e)[:200])
+        st.session_state[f"cands_{wid}"] = cands
+
+    for j, (prov, c) in enumerate(st.session_state.get(f"cands_{wid}", [])):
+        cc1, cc2, cc3 = st.columns([1, 3, 1])
+        if prov == "tmdb":
+            pp = c.get("poster_path")
+            img = f"https://image.tmdb.org/t/p/w154{pp}" if pp else None
+            label = f"{c.get('title')} ({(c.get('release_date') or '')[:4]})"
+        elif prov == "igdb":
+            iid = (c.get("cover") or {}).get("image_id")
+            img = f"https://images.igdb.com/igdb/image/upload/t_cover_small/{iid}.jpg" if iid else None
+            ts = c.get("first_release_date")
+            label = f"{c.get('name')} ({__import__('datetime').datetime.utcfromtimestamp(ts).year if ts else '?'})"
+        else:
+            img = c.get("cover_medium")
+            label = f"{c.get('title')} — {(c.get('artist') or {}).get('name','')}"
+        if img:
+            cc1.image(img, width=60)
+        cc2.write(label)
+        if cc3.button("usar", key=f"use_{wid}_{j}"):
+            from media_catalog.enrich import tmdb, igdb, deezer
+            for sid in tgt:
+                if prov == "tmdb":
+                    tmdb.apply_candidate(conn, sid, c, config.get("tmdb_api_key"))
+                elif prov == "igdb":
+                    igdb.apply_candidate(conn, sid, c, config.get("igdb_client_id"))
+                else:
+                    deezer.apply_candidate(conn, sid, c)
+            st.cache_resource.clear()
+            st.rerun()
+
+    st.divider()
+    mc1, mc2 = st.columns([3, 1])
+    murl = mc1.text_input("…ou capa por URL", key=f"url_{wid}")
+    if mc2.button("Aplicar capa", key=f"mc_{wid}") and murl.strip():
+        try:
+            for sid in tgt:
+                _manual_cover_from_url(sid, typ, murl.strip())
+            st.cache_resource.clear(); st.rerun()
+        except Exception as e:
+            st.error(str(e)[:200])
+
+    if st.button(f"🚫 Ocultar {'estas cópias' if apply_all else 'esta entrada'} (não é media)",
+                 key=f"hide_{wid}"):
+        conn.executemany("UPDATE works SET hidden=1 WHERE id=?", [(s,) for s in tgt])
+        conn.commit()
+        st.cache_resource.clear(); st.rerun()
+
+
 # ── card grid ──────────────────────────────────────────────────────────────
 NCOL = 6
 cols = st.columns(NCOL)
@@ -253,14 +399,9 @@ for i, (r, copies) in enumerate(page_items):
         st.caption(line)
         _drv = ", ".join(sorted({d for d, _ in copies}))
         st.caption(f"📀 {_drv}")
-        with st.popover(f"onde está ({n_copies})" if n_copies > 1 else "onde está"):
-            if genre:
-                st.write(f"**Género:** {genre}")
-            for d, rp in copies:
-                st.write(f"**{d}**")
-                st.code(rp, language=None)
-            if genre:
-                st.write(f"**Género:** {genre}")
+        if st.button("🔍 Detalhes / corrigir", key=f"det_{wid}",
+                     use_container_width=True):
+            show_detail(wid)
 
 if not rows:
     st.info("Nada corresponde aos filtros. Corre `python mediacat.py scan` "

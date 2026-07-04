@@ -121,6 +121,31 @@ def search_game(conn, name: str, cid: str, token: str) -> dict | None:
     return best or None
 
 
+def search_candidates(name: str, cid: str, token: str) -> list:
+    """Top IGDB matches for the manual picker (uncached — interactive)."""
+    safe = (name or "").replace('"', "")
+    body = (f'search "{safe}"; fields name, cover.image_id, first_release_date,'
+            f' genres.name; limit 6;')
+    return _post("games", body, cid, token) or []
+
+
+def apply_candidate(conn, work_id: int, best: dict, cid: str) -> None:
+    cover = None
+    if best.get("cover", {}).get("image_id"):
+        cover = _download_cover(best["cover"]["image_id"], work_id)
+    ts = best.get("first_release_date")
+    yr = datetime.datetime.utcfromtimestamp(ts).year if ts else None
+    gg = ", ".join(g.get("name", "") for g in best.get("genres", []))
+    now = datetime.datetime.now().isoformat(timespec="seconds")
+    conn.execute(
+        "UPDATE works SET title=?, year=COALESCE(?, year), genre=?,"
+        " cover_path=COALESCE(?, cover_path), identifier=?, provider='igdb',"
+        " enriched=1, manual=1, updated_at=? WHERE id=?",
+        (best.get("name"), yr, gg or None, cover, f"igdb:{best['id']}",
+         now, work_id))
+    conn.commit()
+
+
 def _download_cover(image_id: str, work_id: int) -> str | None:
     config.COVERS_DIR.mkdir(parents=True, exist_ok=True)
     dest = config.COVERS_DIR / f"game_{work_id}.jpg"

@@ -67,6 +67,26 @@ def search_album(conn, artist: str, album: str) -> dict | None:
     return best or None
 
 
+def search_candidates(artist: str, album: str) -> list:
+    """Top Deezer album matches for the manual picker (uncached)."""
+    q = f"{artist} {album}".strip()
+    url = f"{_API}?q={urllib.parse.quote(q)}&limit=6"
+    return ((_http_json(url) or {}).get("data") or [])[:6]
+
+
+def apply_candidate(conn, work_id: int, best: dict) -> None:
+    import datetime
+    art = best.get("cover_xl") or best.get("cover_big")
+    cover = _download_cover(art, work_id) if art else None
+    now = datetime.datetime.now().isoformat(timespec="seconds")
+    conn.execute(
+        "UPDATE works SET title=?, artist=?, cover_path=COALESCE(?, cover_path),"
+        " provider='deezer', enriched=1, manual=1, updated_at=? WHERE id=?",
+        (best.get("title"), (best.get("artist") or {}).get("name"),
+         cover, now, work_id))
+    conn.commit()
+
+
 def _download_cover(url: str, work_id: int) -> str | None:
     config.COVERS_DIR.mkdir(parents=True, exist_ok=True)
     dest = config.COVERS_DIR / f"album_{work_id}.jpg"

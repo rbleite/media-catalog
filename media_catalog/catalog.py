@@ -33,7 +33,9 @@ CREATE TABLE IF NOT EXISTS works (
     genre        TEXT,
     extra_json   TEXT,                       -- provider payload (json)
     enriched     INTEGER NOT NULL DEFAULT 0,
-    provider     TEXT,                       -- tmdb | igdb | musicbrainz
+    provider     TEXT,                       -- tmdb | igdb | musicbrainz | …
+    manual       INTEGER NOT NULL DEFAULT 0, -- 1 = user-corrected, don't auto-touch
+    hidden       INTEGER NOT NULL DEFAULT 0, -- 1 = junk, hide from the gallery
     updated_at   TEXT NOT NULL DEFAULT '',
     UNIQUE(drive_label, rel_path)
 );
@@ -66,6 +68,11 @@ def open_catalog(path: Path = DEFAULT_CATALOG,
     # pass writes) instead of raising "database is locked".
     conn.execute("PRAGMA busy_timeout=5000")
     conn.executescript(SCHEMA)
+    # migrate older catalogs: add columns introduced after first release
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(works)")}
+    for col in ("manual", "hidden"):
+        if col not in cols:
+            conn.execute(f"ALTER TABLE works ADD COLUMN {col} INTEGER NOT NULL DEFAULT 0")
     conn.execute(
         "INSERT OR IGNORE INTO meta (k, v) VALUES ('schema_version', ?)",
         (str(SCHEMA_VERSION),),
