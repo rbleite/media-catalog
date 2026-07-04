@@ -93,6 +93,7 @@ GAME_ROOTS: list[tuple[str, str, str]] = [
     ("Consolas/ROMS/Switch", "Switch", "file"),
     ("Switch", "Switch", "file"),          # 6Tb top-level Switch collection
     ("M2/Switch", "Switch", "file"),       # 8Tb
+    ("Users/rleit/Desktop/Switch", "Switch", "file"),  # Criativo (Windows)
     ("Consolas/ROMS/Wii", "Wii", "file"),
     ("Consolas/ROMS/WiiU", "WiiU", "file"),
     ("Consolas/ROMS/PS2", "PS2", "file"),
@@ -200,6 +201,10 @@ def scan_index(db_path: Path, label: str,
         ).fetchall()
     finally:
         conn.close()
+
+    # Windows-indexed drives use backslash separators — normalise to '/' so the
+    # root/prefix and basename logic (all '/'-based) works uniformly.
+    rows = [(rel.replace("\\", "/"), is_dir, size) for rel, is_dir, size in rows]
 
     game_roots = sorted(GAME_ROOTS, key=lambda r: -len(r[0]))  # longest first
 
