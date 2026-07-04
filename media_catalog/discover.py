@@ -7,10 +7,14 @@ config change, not a code change.
 """
 from __future__ import annotations
 
+import json
+import os
 import re
 import sqlite3
 from pathlib import Path
 from typing import Iterator
+
+DX_REGISTRY = Path.home() / ".config" / "drive-xray" / "registry.json"
 
 # --- extensions -----------------------------------------------------------
 # NB: no bare "ts" — on a dev machine that's overwhelmingly TypeScript, not
@@ -334,3 +338,30 @@ def scan_index(db_path: Path, label: str,
     for folder, w in album_folders.items():
         w["size_bytes"] = album_folder_size.get(folder)
         yield w
+
+
+def drive_roots() -> dict:
+    """Map drive_label -> absolute root_path for every registered drive-xray db
+    whose root is mounted *right now*. Used by the opportunistic ID3 pass to
+    reach the real files (media-catalog is otherwise index-only)."""
+    out: dict = {}
+    if not DX_REGISTRY.exists():
+        return out
+    try:
+        data = json.loads(DX_REGISTRY.read_text(encoding="utf-8"))
+    except Exception:
+        return out
+    for key, meta in data.get("drives", {}).items():
+        db = Path(meta.get("db", key))
+        if not db.exists():
+            continue
+        label = meta.get("label", db.stem)
+        try:
+            conn = sqlite3.connect(db)
+            row = conn.execute("SELECT root_path FROM drive LIMIT 1").fetchone()
+            conn.close()
+        except Exception:
+            continue
+        if row and row[0] and os.path.isdir(row[0]):
+            out[label] = row[0]
+    return out

@@ -72,6 +72,20 @@ def cmd_summary(args) -> None:
     _print_summary(conn)
 
 
+def cmd_id3(args) -> None:
+    from media_catalog.enrich import id3
+    roots = D.drive_roots()
+    if not roots:
+        sys.exit("no drive-xray drives mounted right now — plug one in and retry")
+    print("mounted drives: " + ", ".join(f"{k} ({v})" for k, v in roots.items()),
+          file=sys.stderr)
+    conn = C.open_catalog(Path(args.catalog))
+    res = id3.enrich_id3(conn, roots, force=args.force)
+    print(f"\nID3: {res['updated']} albums updated · {res['covers']} embedded "
+          f"covers · {res['skipped_offline']} offline / {res['total']} total",
+          file=sys.stderr)
+
+
 def _print_summary(conn) -> None:
     by_type = C.counts_by_type(conn)
     print("\n  by type:")
@@ -96,8 +110,12 @@ def main() -> None:
 
     sub.add_parser("summary", help="show catalog counts")
 
+    pi = sub.add_parser("id3", help="read ID3 tags off mounted MP3 drives")
+    pi.add_argument("--force", action="store_true",
+                    help="overwrite artist/album/year/genre even when already set")
+
     args = p.parse_args()
-    {"scan": cmd_scan, "summary": cmd_summary}[args.cmd](args)
+    {"scan": cmd_scan, "summary": cmd_summary, "id3": cmd_id3}[args.cmd](args)
 
 
 if __name__ == "__main__":

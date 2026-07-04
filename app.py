@@ -251,6 +251,29 @@ if st.sidebar.button("🎭 Géneros dos álbuns (Deezer)"):
     st.cache_resource.clear()
     st.rerun()
 
+# ID3 tags — read straight off the MP3s, only for drives mounted right now
+from media_catalog import discover as _disc
+_id3_roots = _disc.drive_roots()
+_id3_force = st.sidebar.checkbox("↻ Sobrescrever tudo (ID3)", value=False,
+                                 help="Por defeito só preenche campos vazios.")
+if st.sidebar.button(
+        "🎵 Ler tags ID3 (drives montadas)",
+        disabled=not _id3_roots,
+        help=("Lê Artista/Álbum/Ano/Género e capa embutida dos ficheiros MP3 "
+              "reais. Só funciona nas drives ligadas agora: "
+              + (", ".join(_id3_roots) or "nenhuma montada"))):
+    from media_catalog.enrich import id3 as _id3
+    prog = st.sidebar.progress(0.0, text="A ler tags ID3…")
+    def _cbi3(i, n, u, cv):
+        prog.progress(i / max(n, 1), text=f"{i}/{n} · {u} álbuns · {cv} capas")
+    res = _id3.enrich_id3(conn, _id3_roots, force=_id3_force, progress=_cbi3)
+    st.sidebar.success(f"✓ {res['updated']} álbuns · {res['covers']} capas "
+                       f"embutidas ({res['skipped_offline']} offline)")
+    st.cache_resource.clear()
+    st.rerun()
+if not _id3_roots:
+    st.sidebar.caption("🎵 ID3: nenhuma drive montada agora.")
+
 # ── maintenance: re-scan the drive-xray indexes for new titles ─────────────
 st.sidebar.divider()
 st.sidebar.caption("**Manutenção**")
