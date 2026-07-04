@@ -86,6 +86,38 @@ def cmd_id3(args) -> None:
           file=sys.stderr)
 
 
+def cmd_nfo(args) -> None:
+    from media_catalog import config
+    from media_catalog.enrich import nfo
+    if not config.has_tmdb():
+        sys.exit("nfo matching needs a TMDB api key (see README)")
+    roots = D.drive_roots()
+    if not roots:
+        sys.exit("no drive-xray drives mounted right now — plug one in and retry")
+    print("mounted drives: " + ", ".join(roots), file=sys.stderr)
+    conn = C.open_catalog(Path(args.catalog))
+    res = nfo.enrich_nfo(conn, roots, config.get("tmdb_api_key"), force=args.force)
+    print(f"\nNFO: {res['matched']} movies matched via IMDb · {res['no_id']} "
+          f".nfo without id · {res['skipped_offline']} offline / {res['total']} total",
+          file=sys.stderr)
+
+
+def cmd_export_patch(args) -> None:
+    conn = C.open_catalog(Path(args.catalog))
+    data = C.export_overrides(conn)
+    Path(args.out).write_text(json.dumps(data, ensure_ascii=False, indent=2),
+                              encoding="utf-8")
+    print(f"exported {data['count']} overrides -> {args.out}", file=sys.stderr)
+
+
+def cmd_import_patch(args) -> None:
+    conn = C.open_catalog(Path(args.catalog))
+    data = json.loads(Path(args.file).read_text(encoding="utf-8"))
+    res = C.import_overrides(conn, data)
+    print(f"applied {res['applied']} / {res['total']} overrides"
+          f" ({res['missing']} not in catalog)", file=sys.stderr)
+
+
 def _print_summary(conn) -> None:
     by_type = C.counts_by_type(conn)
     print("\n  by type:")
@@ -114,8 +146,20 @@ def main() -> None:
     pi.add_argument("--force", action="store_true",
                     help="overwrite artist/album/year/genre even when already set")
 
+    pn = sub.add_parser("nfo", help="match movies via IMDb id in .nfo sidecars")
+    pn.add_argument("--force", action="store_true",
+                    help="also re-match movies already corrected by hand (manual=1)")
+
+    pe = sub.add_parser("export-patch", help="save manual overrides to a JSON patch")
+    pe.add_argument("out", nargs="?", default="overrides.json",
+                    help="output file (default: overrides.json)")
+
+    pm = sub.add_parser("import-patch", help="re-apply a JSON patch of overrides")
+    pm.add_argument("file", help="patch file from export-patch")
+
     args = p.parse_args()
-    {"scan": cmd_scan, "summary": cmd_summary, "id3": cmd_id3}[args.cmd](args)
+    {"scan": cmd_scan, "summary": cmd_summary, "id3": cmd_id3, "nfo": cmd_nfo,
+     "export-patch": cmd_export_patch, "import-patch": cmd_import_patch}[args.cmd](args)
 
 
 if __name__ == "__main__":

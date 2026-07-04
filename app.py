@@ -292,6 +292,27 @@ if st.sidebar.button(
 if not _id3_roots:
     st.sidebar.caption("🎵 ID3: nenhuma drive montada agora.")
 
+# NFO sidecars — exact IMDb match for movies whose drive is mounted
+if config.has_tmdb():
+    _nfo_force = st.sidebar.checkbox("↻ Re-igualar corrigidos (NFO)", value=False,
+                                     help="Também re-iguala filmes já corrigidos à mão.")
+    if st.sidebar.button(
+            "🎬 Igualar filmes por .nfo (IMDb)",
+            disabled=not _id3_roots,
+            help=("Lê o IMDb id dos ficheiros .nfo (Kodi/Plex) das pastas dos "
+                  "filmes → match TMDB exato. Só nas drives ligadas: "
+                  + (", ".join(_id3_roots) or "nenhuma montada"))):
+        from media_catalog.enrich import nfo as _nfo
+        prog = st.sidebar.progress(0.0, text="A ler .nfo…")
+        def _cbn(i, n, m, nid):
+            prog.progress(i / max(n, 1), text=f"{i}/{n} · {m} igualados")
+        res = _nfo.enrich_nfo(conn, _id3_roots, config.get("tmdb_api_key"),
+                              force=_nfo_force, progress=_cbn)
+        st.sidebar.success(f"✓ {res['matched']} filmes via IMDb · "
+                           f"{res['no_id']} .nfo sem id ({res['skipped_offline']} offline)")
+        st.cache_resource.clear()
+        st.rerun()
+
 # ── maintenance: re-scan the drive-xray indexes for new titles ─────────────
 st.sidebar.divider()
 st.sidebar.caption("**Manutenção**")
@@ -332,6 +353,29 @@ st.sidebar.download_button(
     file_name="catalogo-media.csv", mime="text/csv",
     use_container_width=True,
     help="Descarrega todas as entradas não ocultas para Excel/Numbers.")
+
+# override patch — back up / restore the hand-work (corrections, status, hidden)
+with st.sidebar.expander("💾 Correções (backup/restauro)", expanded=False):
+    import json as _json_p
+    _patch = C.export_overrides(conn)
+    st.download_button(
+        f"⬇️ Exportar correções ({_patch['count']})",
+        data=_json_p.dumps(_patch, ensure_ascii=False, indent=2).encode("utf-8"),
+        file_name="overrides.json", mime="application/json",
+        use_container_width=True,
+        help="Guarda só as tuas correções manuais, estados e ocultações. "
+             "Reconstrói o catálogo do índice e reaplica isto por cima.")
+    _up = st.file_uploader("Restaurar de um overrides.json", type="json",
+                           key="patch_up")
+    if _up is not None and st.button("↩️ Aplicar correções", use_container_width=True):
+        try:
+            res = C.import_overrides(conn, _json_p.loads(_up.getvalue()))
+            st.success(f"✓ {res['applied']}/{res['total']} aplicadas "
+                       f"({res['missing']} não estão no catálogo)")
+            st.cache_resource.clear()
+            st.rerun()
+        except Exception as e:
+            st.error(str(e)[:200])
 
 with st.sidebar.expander("🔄 Atualizações (GitHub)", expanded=False):
     import update as _upd

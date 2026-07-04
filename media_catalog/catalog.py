@@ -178,3 +178,59 @@ def counts_by_platform(conn: sqlite3.Connection) -> list:
     return conn.execute(
         "SELECT platform, count(*), COALESCE(SUM(size_bytes),0) FROM works"
         " WHERE type='game' GROUP BY platform ORDER BY 2 DESC").fetchall()
+
+
+# ── override patch: the user's hand-work, portable across rebuilds ───────────
+_OVR_COLS = ["drive_label", "rel_path", "type", "manual", "status", "hidden",
+             "title", "year", "genre", "identifier", "provider", "extra_json",
+             "cover_path"]
+
+
+def export_overrides(conn: sqlite3.Connection) -> dict:
+    """Snapshot everything the user did by hand — manual corrections, watch/
+    wishlist status, hidden junk — as a re-appliable overlay keyed by
+    (drive_label, rel_path). The catalog rebuilds from the drive-xray index;
+    this captures the part that can't be regenerated."""
+    rows = conn.execute(
+        f"SELECT {', '.join(_OVR_COLS)} FROM works"
+        " WHERE manual=1 OR status!='' OR COALESCE(hidden,0)=1").fetchall()
+    overrides = [dict(zip(_OVR_COLS, r)) for r in rows]
+    return {
+        "version": 1,
+        "exported_at": datetime.datetime.now().isoformat(timespec="seconds"),
+        "count": len(overrides),
+        "overrides": overrides,
+    }
+
+
+def import_overrides(conn: sqlite3.Connection, data: dict) -> dict:
+    """Re-apply an export_overrides() patch onto the current catalog, matching by
+    (drive_label, rel_path). Rows absent from the catalog are reported, not
+    created (they'll reappear on the next scan of that drive)."""
+    import os
+    now = datetime.datetime.now().isoformat(timespec="seconds")
+    applied = missing = 0
+    for o in data.get("overrides", []):
+        row = conn.execute(
+            "SELECT id FROM works WHERE drive_label=? AND rel_path=?",
+            (o.get("drive_label"), o.get("rel_path"))).fetchone()
+        if not row:
+            missing += 1
+            continue
+        sets = ["status=?", "hidden=?", "updated_at=?"]
+        vals = [o.get("status") or "", int(o.get("hidden") or 0), now]
+        if o.get("manual"):
+            sets += ["title=?", "year=?", "genre=?", "identifier=?",
+                     "provider=?", "extra_json=?", "manual=1", "enriched=1"]
+            vals += [o.get("title"), o.get("year"), o.get("genre"),
+                     o.get("identifier"), o.get("provider"), o.get("extra_json")]
+            cp = o.get("cover_path")
+            if cp and os.path.exists(cp):        # cover still on disk → re-link
+                sets.append("cover_path=?")
+                vals.append(cp)
+        vals.append(row[0])
+        conn.execute(f"UPDATE works SET {', '.join(sets)} WHERE id=?", vals)
+        applied += 1
+    conn.commit()
+    return {"applied": applied, "missing": missing,
+            "total": len(data.get("overrides", []))}
