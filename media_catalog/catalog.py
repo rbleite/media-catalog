@@ -62,6 +62,9 @@ def open_catalog(path: Path = DEFAULT_CATALOG,
     # with check_same_thread=False to share one cached connection safely.
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path, check_same_thread=check_same_thread)
+    # wait out brief writer locks (e.g. the gallery reading while an enrichment
+    # pass writes) instead of raising "database is locked".
+    conn.execute("PRAGMA busy_timeout=5000")
     conn.executescript(SCHEMA)
     conn.execute(
         "INSERT OR IGNORE INTO meta (k, v) VALUES ('schema_version', ?)",
