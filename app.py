@@ -125,6 +125,18 @@ if st.sidebar.button(f"💿 Enriquecer álbuns via MusicBrainz ({_pa} por fazer)
     st.cache_resource.clear()
     st.rerun()
 
+_pai = conn.execute(
+    "SELECT COUNT(*) FROM works WHERE type='album' AND cover_path IS NULL").fetchone()[0]
+if st.sidebar.button(f"💿 Capas em falta via iTunes ({_pai})", disabled=_pai == 0):
+    from media_catalog.enrich import itunes as _it
+    prog = st.sidebar.progress(0.0, text="A procurar capas…")
+    def _cbi(i, n, m, ms):
+        prog.progress(i / max(n, 1), text=f"{i}/{n} · {m} capas")
+    res = _it.enrich_albums(conn, progress=_cbi)
+    st.sidebar.success(f"✓ +{res['matched']} capas iTunes")
+    st.cache_resource.clear()
+    st.rerun()
+
 # ── maintenance: re-scan the drive-xray indexes for new titles ─────────────
 st.sidebar.divider()
 st.sidebar.caption("**Manutenção**")
