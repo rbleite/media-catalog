@@ -288,7 +288,7 @@ def _page_nav(prefix: str):
         st.session_state["gallery_page"] = max(1, min(n_pages, p))
         st.rerun()
 
-    c = st.columns([1, 1, 1, 3, 1, 1, 1])
+    c = st.columns([1, 1, 1, 1, 3, 1, 1, 1, 1])
     if c[0].button("⏮", key=f"{prefix}_first", disabled=page <= 1,
                    help="Primeira", use_container_width=True):
         _go(1)
@@ -298,17 +298,23 @@ def _page_nav(prefix: str):
     if c[2].button("−5", key=f"{prefix}_b5", disabled=page <= 1,
                    use_container_width=True):
         _go(page - 5)
-    c[3].markdown(
+    if c[3].button("‹", key=f"{prefix}_prev", disabled=page <= 1,
+                   help="Anterior", use_container_width=True):
+        _go(page - 1)
+    c[4].markdown(
         f"<div style='text-align:center;padding-top:6px'>Página "
         f"<b>{page}</b> de <b>{n_pages}</b> · {len(items)} resultados</div>",
         unsafe_allow_html=True)
-    if c[4].button("+5", key=f"{prefix}_f5", disabled=page >= n_pages,
+    if c[5].button("›", key=f"{prefix}_next", disabled=page >= n_pages,
+                   help="Seguinte", use_container_width=True):
+        _go(page + 1)
+    if c[6].button("+5", key=f"{prefix}_f5", disabled=page >= n_pages,
                    use_container_width=True):
         _go(page + 5)
-    if c[5].button("+10", key=f"{prefix}_f10", disabled=page >= n_pages,
+    if c[7].button("+10", key=f"{prefix}_f10", disabled=page >= n_pages,
                    use_container_width=True):
         _go(page + 10)
-    if c[6].button("⏭", key=f"{prefix}_last", disabled=page >= n_pages,
+    if c[8].button("⏭", key=f"{prefix}_last", disabled=page >= n_pages,
                    help="Última", use_container_width=True):
         _go(n_pages)
 
