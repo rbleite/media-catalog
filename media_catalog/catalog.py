@@ -28,6 +28,8 @@ CREATE TABLE IF NOT EXISTS works (
     rel_path     TEXT NOT NULL,
     drive_label  TEXT NOT NULL,
     size_bytes   INTEGER,
+    mtime        REAL,                       -- newest file in the work (unix ts)
+    has_subtitles INTEGER NOT NULL DEFAULT 0, -- movie ships a .srt/.sub sidecar
     -- enrichment ---------------------------------------------------------
     cover_path   TEXT,                       -- local cached cover image
     genre        TEXT,
@@ -117,6 +119,10 @@ def open_catalog(path: Path = DEFAULT_CATALOG,
     # status: '' | 'done' (watched/played/listened) | 'want' (wishlist)
     if "status" not in cols:
         conn.execute("ALTER TABLE works ADD COLUMN status TEXT NOT NULL DEFAULT ''")
+    if "mtime" not in cols:
+        conn.execute("ALTER TABLE works ADD COLUMN mtime REAL")
+    if "has_subtitles" not in cols:
+        conn.execute("ALTER TABLE works ADD COLUMN has_subtitles INTEGER NOT NULL DEFAULT 0")
     conn.execute(
         "INSERT OR IGNORE INTO meta (k, v) VALUES ('schema_version', ?)",
         (str(SCHEMA_VERSION),),
@@ -140,23 +146,26 @@ def upsert_work(conn: sqlite3.Connection, w: dict) -> None:
     if existing is None:
         conn.execute(
             "INSERT INTO works (type, title, title_raw, artist, year, platform,"
-            " identifier, rel_path, drive_label, size_bytes, updated_at)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            " identifier, rel_path, drive_label, size_bytes, mtime,"
+            " has_subtitles, updated_at)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (w["type"], w["title"], w.get("title_raw"), w.get("artist"),
              w.get("year"), w.get("platform"), w.get("identifier"),
-             w["rel_path"], w["drive_label"], w.get("size_bytes"), now),
+             w["rel_path"], w["drive_label"], w.get("size_bytes"),
+             w.get("mtime"), int(w.get("has_subtitles", 0)), now),
         )
     else:
         # keep enrichment; refresh only the index-derived fields
         conn.execute(
             "UPDATE works SET type=?, title_raw=?, artist=?, platform=?,"
-            " identifier=?, size_bytes=?, updated_at=?,"
+            " identifier=?, size_bytes=?, mtime=?, has_subtitles=?, updated_at=?,"
             " title=CASE WHEN enriched=1 THEN title ELSE ? END,"
             " year=CASE WHEN enriched=1 THEN year ELSE ? END"
             " WHERE id=?",
             (w["type"], w.get("title_raw"), w.get("artist"),
              w.get("platform"), w.get("identifier"), w.get("size_bytes"),
-             now, w["title"], w.get("year"), existing[0]),
+             w.get("mtime"), int(w.get("has_subtitles", 0)), now,
+             w["title"], w.get("year"), existing[0]),
         )
 
 

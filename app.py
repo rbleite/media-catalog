@@ -149,6 +149,24 @@ sel_status = st.sidebar.radio("Estado", list(_STATUS_OPTS),
                               format_func=lambda k: _STATUS_OPTS[k],
                               horizontal=False, key="sel_status")
 
+# ordering — default groups by cover/type/title; the rest are user picks
+_SORT_OPTS = {
+    "default": "Predefinição (com capa → tipo → título)",
+    "recent": "🆕 Recentes primeiro (data do ficheiro)",
+    "year_desc": "Ano ↓",
+    "size_desc": "Tamanho ↓",
+    "title_az": "Título A–Z",
+}
+_SORT_SQL = {
+    "default": "(cover_path IS NULL), type, title",
+    "recent": "mtime DESC NULLS LAST, updated_at DESC",
+    "year_desc": "year DESC NULLS LAST, title",
+    "size_desc": "size_bytes DESC NULLS LAST",
+    "title_az": "title COLLATE NOCASE",
+}
+sel_sort = st.sidebar.selectbox("Ordenar por", list(_SORT_OPTS),
+                                format_func=lambda k: _SORT_OPTS[k])
+
 _drives = [r[0] for r in conn.execute(
     "SELECT DISTINCT drive_label FROM works ORDER BY drive_label")]
 sel_drives = st.sidebar.multiselect("Drive", _drives, default=[])
@@ -382,9 +400,10 @@ if only_cover:
     where.append("cover_path IS NOT NULL")
 
 sql = ("SELECT id, type, title, artist, year, platform, size_bytes,"
-       " drive_label, rel_path, cover_path, genre, identifier, status"
+       " drive_label, rel_path, cover_path, genre, identifier, status,"
+       " mtime, has_subtitles"
        f" FROM works WHERE {' AND '.join(where)}"
-       " ORDER BY (cover_path IS NULL), type, title")
+       f" ORDER BY {_SORT_SQL.get(sel_sort, _SORT_SQL['default'])}")
 rows = conn.execute(sql, params).fetchall()
 
 
@@ -511,11 +530,12 @@ def show_detail(wid):
     import json as _json
     w = conn.execute(
         "SELECT id,type,title,artist,year,platform,genre,size_bytes,cover_path,"
-        "identifier,provider,extra_json,status FROM works WHERE id=?", (wid,)).fetchone()
+        "identifier,provider,extra_json,status,mtime,has_subtitles"
+        " FROM works WHERE id=?", (wid,)).fetchone()
     if not w:
         st.write("—"); return
     (_id, typ, title, artist, year, platform, genre, size, cover, ident,
-     provider, extra, status) = w
+     provider, extra, status, mtime, has_subs) = w
     c1, c2 = st.columns([1, 2])
     with c1:
         if cover and Path(cover).exists():
@@ -528,7 +548,9 @@ def show_detail(wid):
     with c2:
         st.markdown(f"### {title}")
         meta = " · ".join(str(x) for x in [TYPE_LABEL.get(typ, typ), platform,
-                          artist, year, genre, human(size)] if x)
+                          artist, year, genre, human(size),
+                          ("🔤 legendas" if has_subs else ""),
+                          (f"🆕 {_fmt_date(mtime)}" if mtime else "")] if x)
         st.caption(meta)
         if extra:
             try:
@@ -689,7 +711,7 @@ def _esc(s) -> str:
 
 def _tooltip(r, copies) -> str:
     (wid, typ, title, artist, year, platform, size, drive, rel, cover,
-     genre, ident, status) = r
+     genre, ident, status, mtime, has_subs) = r
     lines = [title or ""]
     meta = " · ".join(str(x) for x in
                       [TYPE_LABEL.get(typ, typ), platform, artist, year] if x)
@@ -697,12 +719,52 @@ def _tooltip(r, copies) -> str:
         lines.append(meta)
     if genre:
         lines.append("🎭 " + genre)
+    if has_subs:
+        lines.append("🔤 legendas")
     if size:
         lines.append(human(size))
+    if mtime:
+        lines.append("🆕 " + _fmt_date(mtime))
     _dr = ", ".join(sorted({d for d, *_ in copies}))
     lines.append(f"📀 {_dr}" + (f"  (×{len(copies)})" if len(copies) > 1 else ""))
     return "&#10;".join(_esc(l) for l in lines if l)
 
+
+def _fmt_date(ts) -> str:
+    try:
+        import datetime
+        return datetime.datetime.fromtimestamp(float(ts)).strftime("%Y-%m-%d")
+    except Exception:
+        return ""
+
+
+# ── recently-added strip ────────────────────────────────────────────────────
+# Independent of the active filters/sort: the newest titles by file mtime, so
+# "what did I just add to the disk?" is always one glance away.
+_recent = conn.execute(
+    "SELECT id, type, title, cover_path, mtime FROM works"
+    " WHERE COALESCE(hidden,0)=0 AND mtime IS NOT NULL"
+    " ORDER BY mtime DESC LIMIT 12").fetchall()
+if _recent and page == 1:
+    with st.expander("🆕 Recém-adicionados", expanded=True):
+        rcols = st.columns(len(_recent))
+        for rc, (rid, rtyp, rtitle, rcover, rmt) in zip(rcols, _recent):
+            with rc:
+                if rcover and Path(rcover).exists():
+                    _rb = _cover_b64(rcover, Path(rcover).stat().st_mtime)
+                    st.markdown(
+                        f'<div class="mc-cover"><img src="data:image/jpeg;base64,{_rb}" '
+                        f'title="{_esc(rtitle)} · {_fmt_date(rmt)}" alt="{_esc(rtitle)}"></div>',
+                        unsafe_allow_html=True)
+                else:
+                    st.markdown(
+                        f'<div class="mc-cover" style="background:{PLACEHOLDER_BG.get(rtyp,"#333")}">'
+                        f'<div class="mc-placeholder">{TYPE_EMOJI.get(rtyp,"?")}</div></div>',
+                        unsafe_allow_html=True)
+                st.caption(f"{TYPE_EMOJI.get(rtyp,'')} {_fmt_date(rmt)}")
+                if st.button("🔍", key=f"rec_{rid}", help=rtitle,
+                             use_container_width=True):
+                    show_detail(rid)
 
 # ── card grid ──────────────────────────────────────────────────────────────
 NCOL = 6
@@ -710,7 +772,7 @@ for row_start in range(0, len(page_items), NCOL):
     cols = st.columns(NCOL)
     for col, (r, copies) in zip(cols, page_items[row_start: row_start + NCOL]):
         (wid, typ, title, artist, year, platform, size, drive, rel, cover,
-         genre, ident, status) = r
+         genre, ident, status, mtime, has_subs) = r
         n_copies = len(copies)
         with col:
             _tip = _tooltip(r, copies)
@@ -735,6 +797,8 @@ for row_start in range(0, len(page_items), NCOL):
                 _badges += '<span class="mc-badge">✓</span>'
             elif status == "want":
                 _badges += '<span class="mc-badge">★</span>'
+            if has_subs:
+                _badges += '<span class="mc-badge" title="tem legendas">🔤</span>'
             st.markdown(f'<div class="mc-title">{_title}{_badges}</div>',
                         unsafe_allow_html=True)
 

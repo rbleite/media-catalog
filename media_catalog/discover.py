@@ -27,6 +27,9 @@ AUDIO_EXT = {
     "mp3", "flac", "wav", "m4a", "aac", "ogg", "wma", "opus",
     "aiff", "ape", "alac", "wv",
 }
+# subtitle sidecars — detected straight from the index (no file read) to flag
+# movies that ship subtitles.
+SUB_EXT = {"srt", "sub", "ass", "ssa", "vtt", "idx", "smi"}
 # rom / disc-image containers that stand for a whole game
 GAME_FILE_EXT = {
     "iso", "nsp", "xci", "nsz", "xcz", "wbfs", "rvz", "wad", "cso", "chd",
@@ -200,7 +203,7 @@ def scan_index(db_path: Path, label: str,
         if sid is None:
             return
         rows = conn.execute(
-            "SELECT rel_path, is_dir, size FROM entries"
+            "SELECT rel_path, is_dir, size, mtime FROM entries"
             " WHERE snapshot_id=? AND error IS NULL", (sid,),
         ).fetchall()
     finally:
@@ -208,7 +211,8 @@ def scan_index(db_path: Path, label: str,
 
     # Windows-indexed drives use backslash separators — normalise to '/' so the
     # root/prefix and basename logic (all '/'-based) works uniformly.
-    rows = [(rel.replace("\\", "/"), is_dir, size) for rel, is_dir, size in rows]
+    rows = [(rel.replace("\\", "/"), is_dir, size, mtime)
+            for rel, is_dir, size, mtime in rows]
 
     game_roots = sorted(GAME_ROOTS, key=lambda r: -len(r[0]))  # longest first
 
@@ -221,7 +225,7 @@ def scan_index(db_path: Path, label: str,
     # --- pass 1: identify games ---------------------------------------------
     folder_games: dict[str, dict] = {}   # rel_path -> work (size filled below)
     file_games: list[dict] = []
-    for rel, is_dir, size in rows:
+    for rel, is_dir, size, mtime in rows:
         base = _basename(rel)
         if base.lower() in _SKIP_NAMES or base.startswith("._"):
             continue  # macOS AppleDouble sidecars (._foo) are not titles
@@ -239,6 +243,7 @@ def scan_index(db_path: Path, label: str,
                     "title": name or base, "title_raw": base,
                     "identifier": tid, "rel_path": rel,
                     "drive_label": label, "size_bytes": 0,
+                    "mtime": mtime or 0.0,
                 }
             elif unit == "file" and not is_dir and is_direct:
                 if _ext(base) not in GAME_FILE_EXT:
@@ -249,6 +254,7 @@ def scan_index(db_path: Path, label: str,
                     "title": title, "title_raw": base,
                     "identifier": tid, "rel_path": rel,
                     "drive_label": label, "size_bytes": size,
+                    "mtime": mtime or 0.0,
                 })
             continue
         if is_dir:  # title-id folder anywhere (fallback outside known roots)
@@ -260,12 +266,13 @@ def scan_index(db_path: Path, label: str,
                     "title": name or base, "title_raw": base,
                     "identifier": tid, "rel_path": rel,
                     "drive_label": label, "size_bytes": 0,
+                    "mtime": mtime or 0.0,
                 }
 
     # --- aggregate descendant sizes for folder-unit games (games don't nest,
     #     so each file belongs to at most one game folder) --------------------
     if folder_games:
-        for rel, is_dir, size in rows:
+        for rel, is_dir, size, mtime in rows:
             if is_dir or not size:
                 continue
             parts = rel.split("/")
@@ -273,6 +280,8 @@ def scan_index(db_path: Path, label: str,
                 anc = "/".join(parts[:k])
                 if anc in folder_games:
                     folder_games[anc]["size_bytes"] += size
+                    if (mtime or 0) > (folder_games[anc].get("mtime") or 0):
+                        folder_games[anc]["mtime"] = mtime
                     break
 
     yield from folder_games.values()
@@ -292,15 +301,21 @@ def scan_index(db_path: Path, label: str,
     # works at any depth inside the nested drive backups.
     movie_folders: dict[str, dict] = {}   # folder -> work
     movie_folder_size: dict[str, int] = {}
+    movie_folder_mtime: dict[str, float] = {}
+    movie_dir_has_sub: set = set()        # folders holding a subtitle sidecar
     # Albums: one work per folder that directly contains audio; artist = the
     # folder above it (Artist/Album/tracks), when that is not the root.
     album_folders: dict[str, dict] = {}
     album_folder_size: dict[str, int] = {}
+    album_folder_mtime: dict[str, float] = {}
 
-    for rel, is_dir, size in rows:
+    for rel, is_dir, size, mtime in rows:
         if is_dir:
             continue
         ext = _ext(_basename(rel))
+        if ext in SUB_EXT and _under_prefixes(rel, movie_roots):
+            movie_dir_has_sub.add(_parent(rel))
+            continue
         if ext in VIDEO_EXT and _under_prefixes(rel, movie_roots):
             folder = _parent(rel)
             if _under_prefixes(folder, movie_roots) and folder not in (movie_roots):
@@ -308,6 +323,8 @@ def scan_index(db_path: Path, label: str,
             else:                       # video directly in a root
                 key, name = rel, _basename(rel)
             movie_folder_size[key] = movie_folder_size.get(key, 0) + (size or 0)
+            if (mtime or 0) > movie_folder_mtime.get(key, 0):
+                movie_folder_mtime[key] = mtime or 0.0
             if key not in movie_folders:
                 title, year = _clean_movie_title(name)
                 movie_folders[key] = {
@@ -318,6 +335,8 @@ def scan_index(db_path: Path, label: str,
         elif ext in AUDIO_EXT and _under_prefixes(rel, music_roots):
             folder = _parent(rel)
             album_folder_size[folder] = album_folder_size.get(folder, 0) + (size or 0)
+            if (mtime or 0) > album_folder_mtime.get(folder, 0):
+                album_folder_mtime[folder] = mtime or 0.0
             if folder not in album_folders:
                 # artist = the folder above the album, unless that IS a root
                 # (Artist/Album/tracks -> artist; Root/Album/tracks -> none)
@@ -334,9 +353,16 @@ def scan_index(db_path: Path, label: str,
 
     for key, w in movie_folders.items():
         w["size_bytes"] = movie_folder_size.get(key)
+        w["mtime"] = movie_folder_mtime.get(key, 0.0)
+        # a subtitle sitting in the release folder (or, for a root-direct movie,
+        # in the same dir) marks the film as subtitled — read straight from the
+        # index, no file access.
+        w["has_subtitles"] = int(key in movie_dir_has_sub
+                                 or _parent(key) in movie_dir_has_sub)
         yield w
     for folder, w in album_folders.items():
         w["size_bytes"] = album_folder_size.get(folder)
+        w["mtime"] = album_folder_mtime.get(folder, 0.0)
         yield w
 
 
