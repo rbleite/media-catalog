@@ -250,7 +250,45 @@ st.caption(_cap)
 # ── pagination ─────────────────────────────────────────────────────────────
 PER_PAGE = 60
 n_pages = max(1, (len(items) + PER_PAGE - 1) // PER_PAGE)
-page = st.number_input("Página", 1, n_pages, 1, step=1) if n_pages > 1 else 1
+page = max(1, min(n_pages, int(st.session_state.get("gallery_page", 1))))
+
+
+def _page_nav(prefix: str):
+    """First / ±10 / ±5 / last controls + 'page X of N'. Rendered top & bottom."""
+    if n_pages <= 1:
+        st.caption(f"Página 1 de 1  ·  {len(items)} resultados")
+        return
+
+    def _go(p):
+        st.session_state["gallery_page"] = max(1, min(n_pages, p))
+        st.rerun()
+
+    c = st.columns([1, 1, 1, 3, 1, 1, 1])
+    if c[0].button("⏮", key=f"{prefix}_first", disabled=page <= 1,
+                   help="Primeira", use_container_width=True):
+        _go(1)
+    if c[1].button("−10", key=f"{prefix}_b10", disabled=page <= 1,
+                   use_container_width=True):
+        _go(page - 10)
+    if c[2].button("−5", key=f"{prefix}_b5", disabled=page <= 1,
+                   use_container_width=True):
+        _go(page - 5)
+    c[3].markdown(
+        f"<div style='text-align:center;padding-top:6px'>Página "
+        f"<b>{page}</b> de <b>{n_pages}</b> · {len(items)} resultados</div>",
+        unsafe_allow_html=True)
+    if c[4].button("+5", key=f"{prefix}_f5", disabled=page >= n_pages,
+                   use_container_width=True):
+        _go(page + 5)
+    if c[5].button("+10", key=f"{prefix}_f10", disabled=page >= n_pages,
+                   use_container_width=True):
+        _go(page + 10)
+    if c[6].button("⏭", key=f"{prefix}_last", disabled=page >= n_pages,
+                   help="Última", use_container_width=True):
+        _go(n_pages)
+
+
+_page_nav("top")
 page_items = items[(page - 1) * PER_PAGE: page * PER_PAGE]
 
 # ── detail + manual correction dialog ──────────────────────────────────────
@@ -446,6 +484,10 @@ for i, (r, copies) in enumerate(page_items):
         if st.button("🔍 Detalhes / corrigir", key=f"det_{wid}",
                      use_container_width=True):
             show_detail(wid)
+
+if page_items:
+    st.divider()
+    _page_nav("bottom")
 
 if not rows:
     st.info("Nada corresponde aos filtros. Corre `python mediacat.py scan` "
