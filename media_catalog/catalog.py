@@ -12,7 +12,7 @@ import json
 import sqlite3
 from pathlib import Path
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS works (
@@ -58,6 +58,47 @@ CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT);
 DEFAULT_CATALOG = Path.home() / "tools" / "media-catalog" / "catalog.db"
 
 
+
+def ensure_search_index(conn: sqlite3.Connection) -> bool:
+    """Create/refresh a lightweight FTS5 index for title search.
+
+    Some Python/SQLite builds may lack FTS5; in that case the app falls back to
+    LIKE search. Keeping this optional makes the catalog portable.
+    """
+    try:
+        conn.executescript("""
+        CREATE VIRTUAL TABLE IF NOT EXISTS works_fts USING fts5(
+            title, title_raw, artist, genre, platform, rel_path,
+            content='works', content_rowid='id'
+        );
+        CREATE TRIGGER IF NOT EXISTS works_ai AFTER INSERT ON works BEGIN
+            INSERT INTO works_fts(rowid,title,title_raw,artist,genre,platform,rel_path)
+            VALUES (new.id,new.title,new.title_raw,new.artist,new.genre,new.platform,new.rel_path);
+        END;
+        CREATE TRIGGER IF NOT EXISTS works_ad AFTER DELETE ON works BEGIN
+            INSERT INTO works_fts(works_fts,rowid,title,title_raw,artist,genre,platform,rel_path)
+            VALUES('delete',old.id,old.title,old.title_raw,old.artist,old.genre,old.platform,old.rel_path);
+        END;
+        CREATE TRIGGER IF NOT EXISTS works_au AFTER UPDATE ON works BEGIN
+            INSERT INTO works_fts(works_fts,rowid,title,title_raw,artist,genre,platform,rel_path)
+            VALUES('delete',old.id,old.title,old.title_raw,old.artist,old.genre,old.platform,old.rel_path);
+            INSERT INTO works_fts(rowid,title,title_raw,artist,genre,platform,rel_path)
+            VALUES (new.id,new.title,new.title_raw,new.artist,new.genre,new.platform,new.rel_path);
+        END;
+        """)
+        # External-content FTS tables can report rows from the content table
+        # even before the lexical index has been built. Rebuild once per schema
+        # version; triggers keep it current after that.
+        row = conn.execute("SELECT v FROM meta WHERE k='fts_version'").fetchone()
+        if not row or row[0] != str(SCHEMA_VERSION):
+            conn.execute("INSERT INTO works_fts(works_fts) VALUES('rebuild')")
+            conn.execute("INSERT OR REPLACE INTO meta (k, v) VALUES ('fts_version', ?)",
+                         (str(SCHEMA_VERSION),))
+        conn.commit()
+        return True
+    except sqlite3.Error:
+        return False
+
 def open_catalog(path: Path = DEFAULT_CATALOG,
                  check_same_thread: bool = True) -> sqlite3.Connection:
     # Streamlit reruns the script across worker threads, so the gallery opens
@@ -73,11 +114,15 @@ def open_catalog(path: Path = DEFAULT_CATALOG,
     for col in ("manual", "hidden"):
         if col not in cols:
             conn.execute(f"ALTER TABLE works ADD COLUMN {col} INTEGER NOT NULL DEFAULT 0")
+    # status: '' | 'done' (watched/played/listened) | 'want' (wishlist)
+    if "status" not in cols:
+        conn.execute("ALTER TABLE works ADD COLUMN status TEXT NOT NULL DEFAULT ''")
     conn.execute(
         "INSERT OR IGNORE INTO meta (k, v) VALUES ('schema_version', ?)",
         (str(SCHEMA_VERSION),),
     )
     conn.commit()
+    ensure_search_index(conn)
     return conn
 
 

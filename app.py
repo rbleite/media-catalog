@@ -20,6 +20,66 @@ from media_catalog import config
 
 st.set_page_config(page_title="Media Catalog", page_icon="🎬", layout="wide")
 
+st.markdown("""
+<style>
+.mc-cover {
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #f1f3f5;
+  margin-bottom: 0.55rem;
+}
+.mc-cover img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.mc-placeholder {
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 3rem;
+}
+.mc-title {
+  min-height: 2.7em;
+  line-height: 1.32;
+  font-weight: 700;
+  font-size: 0.96rem;
+  margin: 0 0 0.28rem 0;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+.mc-meta {
+  min-height: 2.55em;
+  line-height: 1.35;
+  color: rgba(49, 51, 63, 0.70);
+  font-size: 0.86rem;
+  margin-bottom: 0.32rem;
+}
+.mc-drive {
+  min-height: 1.35em;
+  color: rgba(49, 51, 63, 0.70);
+  font-size: 0.84rem;
+  margin-bottom: 0.50rem;
+}
+.mc-badge {
+  display: inline-block;
+  margin-left: 0.35rem;
+  padding: 0.04rem 0.25rem;
+  border-radius: 4px;
+  background: #e7f6e7;
+  color: #1b6b1b;
+  font-size: 0.72rem;
+  vertical-align: 0.08rem;
+}
+</style>
+""", unsafe_allow_html=True)
+
 TYPE_EMOJI = {"movie": "🎬", "album": "💿", "game": "🎮"}
 TYPE_LABEL = {"movie": "Filmes", "album": "Álbuns", "game": "Jogos"}
 PLACEHOLDER_BG = {"movie": "#37474f", "album": "#4a148c", "game": "#1b5e20"}
@@ -45,6 +105,20 @@ def _conn() -> sqlite3.Connection:
 
 conn = _conn()
 
+
+def _has_fts() -> bool:
+    try:
+        return conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='works_fts'"
+        ).fetchone() is not None
+    except sqlite3.Error:
+        return False
+
+
+def _fts_query(q: str) -> str:
+    tokens = re.findall(r"\w+", q.lower(), flags=re.UNICODE)
+    return " ".join(f"{t}*" for t in tokens[:8])
+
 # ── sidebar filters ────────────────────────────────────────────────────────
 st.sidebar.title("🎬 Media Catalog")
 
@@ -69,6 +143,12 @@ for (_g,) in conn.execute(
 sel_genres = st.sidebar.multiselect("Género (filmes / álbuns / jogos)",
                                     sorted(_genre_set), default=[])
 
+_STATUS_OPTS = {"": "Todos", "todo": "⬜ Por ver / jogar",
+                "done": "✅ Visto / jogado", "want": "⭐ Wishlist"}
+sel_status = st.sidebar.radio("Estado", list(_STATUS_OPTS),
+                              format_func=lambda k: _STATUS_OPTS[k],
+                              horizontal=False, key="sel_status")
+
 _drives = [r[0] for r in conn.execute(
     "SELECT DISTINCT drive_label FROM works ORDER BY drive_label")]
 sel_drives = st.sidebar.multiselect("Drive", _drives, default=[])
@@ -89,6 +169,18 @@ dedup = st.sidebar.checkbox("🔀 Ocultar duplicados", value=True,
                             help="Colapsa o mesmo título repetido em várias "
                                  "drives/pastas numa só entrada (×N).")
 show_hidden = st.sidebar.checkbox("🚫 Mostrar ocultos", value=False)
+
+_REVIEW_OPTS = {
+    "": "Galeria normal",
+    "missing_cover": "Sem capa",
+    "missing_meta": "Metadados em falta",
+    "misses": "Falhas de enriquecimento",
+    "possible_dups": "Possíveis duplicados",
+}
+review_mode = st.sidebar.selectbox(
+    "Modo de revisão", list(_REVIEW_OPTS),
+    format_func=lambda k: _REVIEW_OPTS[k],
+    help="Filas rápidas para limpar o catálogo.")
 
 # ── TMDB enrichment control ────────────────────────────────────────────────
 st.sidebar.divider()
@@ -176,6 +268,30 @@ if st.sidebar.button("🔄 Atualizar catálogo (reler drives)",
     st.cache_resource.clear()
     st.rerun()
 
+
+def _inventory_csv() -> bytes:
+    import csv, io
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["tipo", "titulo", "artista", "ano", "plataforma", "genero",
+                "estado", "drive", "caminho", "tamanho_bytes", "fonte", "id"])
+    _stmap = {"done": "feito", "want": "wishlist", "": ""}
+    for row in conn.execute(
+            "SELECT type,title,artist,year,platform,genre,status,drive_label,"
+            "rel_path,size_bytes,provider,identifier FROM works"
+            " WHERE COALESCE(hidden,0)=0 ORDER BY type,title"):
+        row = list(row)
+        row[6] = _stmap.get(row[6], row[6] or "")
+        w.writerow(["" if c is None else c for c in row])
+    return buf.getvalue().encode("utf-8")
+
+
+st.sidebar.download_button(
+    "⬇️ Exportar inventário (CSV)", data=_inventory_csv(),
+    file_name="catalogo-media.csv", mime="text/csv",
+    use_container_width=True,
+    help="Descarrega todas as entradas não ocultas para Excel/Numbers.")
+
 with st.sidebar.expander("🔄 Atualizações (GitHub)", expanded=False):
     import update as _upd
     if st.button("Verificar atualizações", key="upd_check", use_container_width=True):
@@ -210,12 +326,32 @@ if sel_genres:
     # genre column is comma-separated, so match each selected genre by substring
     where.append("(" + " OR ".join(["genre LIKE ?"] * len(sel_genres)) + ")")
     params += [f"%{g}%" for g in sel_genres]
+if sel_status == "done":
+    where.append("status='done'")
+elif sel_status == "want":
+    where.append("status='want'")
+elif sel_status == "todo":
+    where.append("(status IS NULL OR status='')")
 if sel_drives:
     where.append("drive_label IN (%s)" % ",".join("?" * len(sel_drives)))
     params += sel_drives
+if review_mode == "missing_cover":
+    where.append("cover_path IS NULL")
+elif review_mode == "missing_meta":
+    where.append("(year IS NULL OR genre IS NULL OR genre='')")
+elif review_mode == "misses":
+    where.append("provider LIKE '%-miss'")
+elif review_mode == "possible_dups":
+    where.append("lower(title) IN (SELECT lower(title) FROM works WHERE COALESCE(hidden,0)=0 GROUP BY lower(title) HAVING COUNT(*) > 1)")
 if query.strip():
-    where.append("(title LIKE ? OR artist LIKE ?)")
-    params += [f"%{query.strip()}%", f"%{query.strip()}%"]
+    fts = _fts_query(query.strip())
+    if fts and _has_fts():
+        where.append("id IN (SELECT rowid FROM works_fts WHERE works_fts MATCH ?)")
+        params.append(fts)
+    else:
+        where.append("(title LIKE ? OR title_raw LIKE ? OR artist LIKE ? OR rel_path LIKE ?)")
+        qlike = f"%{query.strip()}%"
+        params += [qlike, qlike, qlike, qlike]
 if yr_range:
     where.append("year BETWEEN ? AND ?")
     params += [yr_range[0], yr_range[1]]
@@ -223,7 +359,7 @@ if only_cover:
     where.append("cover_path IS NOT NULL")
 
 sql = ("SELECT id, type, title, artist, year, platform, size_bytes,"
-       " drive_label, rel_path, cover_path, genre, identifier"
+       " drive_label, rel_path, cover_path, genre, identifier, status"
        f" FROM works WHERE {' AND '.join(where)}"
        " ORDER BY (cover_path IS NULL), type, title")
 rows = conn.execute(sql, params).fetchall()
@@ -247,12 +383,12 @@ if dedup:
     items = []
     for grp in groups.values():
         rep = next((x for x in grp if x[9]), grp[0])  # prefer one with a cover
-        copies = [(x[7], x[8]) for x in grp]
+        copies = [(x[7], x[8], x[6] or 0) for x in grp]
         items.append((rep, copies))
     # keep the cover-first / type / title ordering of the representatives
     items.sort(key=lambda it: (it[0][9] is None, it[0][1], (it[0][2] or "").lower()))
 else:
-    items = [(r, [(r[7], r[8])]) for r in rows]
+    items = [(r, [(r[7], r[8], r[6] or 0)]) for r in rows]
 
 # ── header metrics ─────────────────────────────────────────────────────────
 st.title("🎬 Media Catalog")
@@ -260,7 +396,7 @@ by_type: dict[str, int] = {}
 total_size = 0
 for rep, copies in items:
     by_type[rep[1]] = by_type.get(rep[1], 0) + 1
-    total_size += rep[6] or 0
+    total_size += sum(c[2] for c in copies) if dedup else (rep[6] or 0)
 mcols = st.columns(4)
 mcols[0].metric("Resultados", f"{len(items):,}"
                 + (f" (de {len(rows):,})" if dedup and len(items) != len(rows) else ""))
@@ -271,6 +407,8 @@ _cap = f"Tamanho total: **{human(total_size)}**  ·  {sum(1 for it in items if i
 if dedup and len(items) != len(rows):
     _cap += f"  ·  🔀 {len(rows) - len(items)} duplicados ocultados"
 st.caption(_cap)
+if review_mode:
+    st.info(f"Modo de revisão ativo: {_REVIEW_OPTS[review_mode]}")
 
 # ── pagination ─────────────────────────────────────────────────────────────
 PER_PAGE = 60
@@ -350,11 +488,11 @@ def show_detail(wid):
     import json as _json
     w = conn.execute(
         "SELECT id,type,title,artist,year,platform,genre,size_bytes,cover_path,"
-        "identifier,provider,extra_json FROM works WHERE id=?", (wid,)).fetchone()
+        "identifier,provider,extra_json,status FROM works WHERE id=?", (wid,)).fetchone()
     if not w:
         st.write("—"); return
     (_id, typ, title, artist, year, platform, genre, size, cover, ident,
-     provider, extra) = w
+     provider, extra, status) = w
     c1, c2 = st.columns([1, 2])
     with c1:
         if cover and Path(cover).exists():
@@ -396,6 +534,29 @@ def show_detail(wid):
         d, rp = conn.execute("SELECT drive_label, rel_path FROM works WHERE id=?",
                              (sid,)).fetchone()
         st.caption(f"📀 **{d}** · `{rp}`")
+
+    st.divider()
+    _done_lbl = {"movie": "✅ Visto", "game": "✅ Jogado",
+                 "album": "✅ Ouvido"}.get(typ, "✅ Feito")
+    _cur = {"done": _done_lbl.replace("✅", "✅ marcado:"),
+            "want": "⭐ na wishlist"}.get(status, "sem estado")
+    st.markdown(f"**🎯 Estado:** {_cur}")
+    sc1, sc2, sc3 = st.columns(3)
+
+    def _set_status(val):
+        conn.executemany("UPDATE works SET status=? WHERE id=?",
+                         [(val, s) for s in sibs])
+        conn.commit()
+        st.rerun()
+
+    if sc1.button(_done_lbl, key=f"st_done_{wid}", use_container_width=True,
+                  type="primary" if status == "done" else "secondary"):
+        _set_status("done")
+    if sc2.button("⭐ Wishlist", key=f"st_want_{wid}", use_container_width=True,
+                  type="primary" if status == "want" else "secondary"):
+        _set_status("want")
+    if sc3.button("⬜ Limpar", key=f"st_clear_{wid}", use_container_width=True):
+        _set_status("")
 
     st.divider()
     st.markdown("**✏️ Corrigir**")
@@ -505,7 +666,7 @@ def _esc(s) -> str:
 
 def _tooltip(r, copies) -> str:
     (wid, typ, title, artist, year, platform, size, drive, rel, cover,
-     genre, ident) = r
+     genre, ident, status) = r
     lines = [title or ""]
     meta = " · ".join(str(x) for x in
                       [TYPE_LABEL.get(typ, typ), platform, artist, year] if x)
@@ -515,42 +676,56 @@ def _tooltip(r, copies) -> str:
         lines.append("🎭 " + genre)
     if size:
         lines.append(human(size))
-    _dr = ", ".join(sorted({d for d, _ in copies}))
+    _dr = ", ".join(sorted({d for d, *_ in copies}))
     lines.append(f"📀 {_dr}" + (f"  (×{len(copies)})" if len(copies) > 1 else ""))
     return "&#10;".join(_esc(l) for l in lines if l)
 
 
 # ── card grid ──────────────────────────────────────────────────────────────
 NCOL = 6
-cols = st.columns(NCOL)
-for i, (r, copies) in enumerate(page_items):
-    (wid, typ, title, artist, year, platform, size, drive, rel, cover, genre, ident) = r
-    n_copies = len(copies)
-    with cols[i % NCOL]:
-        _tip = _tooltip(r, copies)
-        if cover and Path(cover).exists():
-            _b = _cover_b64(cover, Path(cover).stat().st_mtime)
-            st.markdown(
-                f'<img src="data:image/jpeg;base64,{_b}" title="{_tip}" '
-                f'style="width:100%;border-radius:6px;display:block" />',
-                unsafe_allow_html=True)
-        else:
-            st.markdown(
-                f'<div title="{_tip}" style="background:{PLACEHOLDER_BG.get(typ,"#333")};'
-                f'height:210px;border-radius:8px;display:flex;align-items:center;'
-                f'justify-content:center;font-size:3em">{TYPE_EMOJI.get(typ,"?")}</div>',
-                unsafe_allow_html=True)
-        badge = f"  `×{n_copies}`" if n_copies > 1 else ""
-        st.markdown(f"**{(title or '')[:40]}**{badge}")
-        sub = artist or platform or (str(year) if year else "")
-        line = " · ".join(x for x in [sub, str(year) if (year and sub != str(year)) else "",
-                                      human(size)] if x)
-        st.caption(line)
-        _drv = ", ".join(sorted({d for d, _ in copies}))
-        st.caption(f"📀 {_drv}")
-        if st.button("🔍 Detalhes / corrigir", key=f"det_{wid}",
-                     use_container_width=True):
-            show_detail(wid)
+for row_start in range(0, len(page_items), NCOL):
+    cols = st.columns(NCOL)
+    for col, (r, copies) in zip(cols, page_items[row_start: row_start + NCOL]):
+        (wid, typ, title, artist, year, platform, size, drive, rel, cover,
+         genre, ident, status) = r
+        n_copies = len(copies)
+        with col:
+            _tip = _tooltip(r, copies)
+            _title = _esc(title or "")
+            if cover and Path(cover).exists():
+                _b = _cover_b64(cover, Path(cover).stat().st_mtime)
+                st.markdown(
+                    f'<div class="mc-cover"><img src="data:image/jpeg;base64,{_b}" '
+                    f'title="{_tip}" alt="{_title}"></div>',
+                    unsafe_allow_html=True)
+            else:
+                st.markdown(
+                    f'<div class="mc-cover" title="{_tip}" '
+                    f'style="background:{PLACEHOLDER_BG.get(typ,"#333")}">'
+                    f'<div class="mc-placeholder">{TYPE_EMOJI.get(typ,"?")}</div></div>',
+                    unsafe_allow_html=True)
+
+            _badges = ""
+            if n_copies > 1:
+                _badges += f'<span class="mc-badge">×{n_copies}</span>'
+            if status == "done":
+                _badges += '<span class="mc-badge">✓</span>'
+            elif status == "want":
+                _badges += '<span class="mc-badge">★</span>'
+            st.markdown(f'<div class="mc-title">{_title}{_badges}</div>',
+                        unsafe_allow_html=True)
+
+            sub = artist or platform or (str(year) if year else "")
+            line = " · ".join(x for x in [sub, str(year) if (year and sub != str(year)) else "",
+                                          human(size)] if x)
+            st.markdown(f'<div class="mc-meta">{_esc(line)}</div>',
+                        unsafe_allow_html=True)
+            _drv = ", ".join(sorted({d for d, *_ in copies}))
+            st.markdown(f'<div class="mc-drive">📀 {_esc(_drv)}</div>',
+                        unsafe_allow_html=True)
+            if st.button("🔍 Detalhes / corrigir", key=f"det_{wid}",
+                         use_container_width=True):
+                show_detail(wid)
 
 if page_items:
     st.divider()
