@@ -58,6 +58,17 @@ _plats = [r[0] for r in conn.execute(
     "SELECT DISTINCT platform FROM works WHERE platform IS NOT NULL ORDER BY platform")]
 sel_plats = st.sidebar.multiselect("Plataforma (jogos)", _plats, default=[])
 
+# genres — comma-separated in the DB (e.g. "Drama, Thriller"); split into a set
+_genre_set: set = set()
+for (_g,) in conn.execute(
+        "SELECT DISTINCT genre FROM works WHERE genre IS NOT NULL AND genre!=''"):
+    for _part in str(_g).split(","):
+        _p = _part.strip()
+        if _p:
+            _genre_set.add(_p)
+sel_genres = st.sidebar.multiselect("Género (filmes / álbuns / jogos)",
+                                    sorted(_genre_set), default=[])
+
 _drives = [r[0] for r in conn.execute(
     "SELECT DISTINCT drive_label FROM works ORDER BY drive_label")]
 sel_drives = st.sidebar.multiselect("Drive", _drives, default=[])
@@ -138,6 +149,16 @@ if st.sidebar.button(f"💿 Capas em falta via Deezer ({_pai})", disabled=_pai =
     st.cache_resource.clear()
     st.rerun()
 
+if st.sidebar.button("🎭 Géneros dos álbuns (Deezer)"):
+    from media_catalog.enrich import deezer as _dz2
+    prog = st.sidebar.progress(0.0, text="A buscar géneros…")
+    def _cbg2(i, n, m, ms):
+        prog.progress(i / max(n, 1), text=f"{i}/{n} · {m}")
+    res = _dz2.enrich_genres(conn, progress=_cbg2)
+    st.sidebar.success(f"✓ {res['matched']} géneros")
+    st.cache_resource.clear()
+    st.rerun()
+
 # ── maintenance: re-scan the drive-xray indexes for new titles ─────────────
 st.sidebar.divider()
 st.sidebar.caption("**Manutenção**")
@@ -185,6 +206,10 @@ if sel_types:
 if sel_plats:
     where.append("platform IN (%s)" % ",".join("?" * len(sel_plats)))
     params += sel_plats
+if sel_genres:
+    # genre column is comma-separated, so match each selected genre by substring
+    where.append("(" + " OR ".join(["genre LIKE ?"] * len(sel_genres)) + ")")
+    params += [f"%{g}%" for g in sel_genres]
 if sel_drives:
     where.append("drive_label IN (%s)" % ",".join("?" * len(sel_drives)))
     params += sel_drives
@@ -458,6 +483,37 @@ def show_detail(wid):
         st.cache_resource.clear(); st.rerun()
 
 
+# ── hover tooltip helpers ──────────────────────────────────────────────────
+import base64
+
+
+@st.cache_data(show_spinner=False, max_entries=4096)
+def _cover_b64(path: str, _mtime: float) -> str:
+    return base64.b64encode(Path(path).read_bytes()).decode()
+
+
+def _esc(s) -> str:
+    return (str(s or "").replace("&", "&amp;").replace('"', "&quot;")
+            .replace("<", "&lt;").replace(">", "&gt;"))
+
+
+def _tooltip(r, copies) -> str:
+    (wid, typ, title, artist, year, platform, size, drive, rel, cover,
+     genre, ident) = r
+    lines = [title or ""]
+    meta = " · ".join(str(x) for x in
+                      [TYPE_LABEL.get(typ, typ), platform, artist, year] if x)
+    if meta:
+        lines.append(meta)
+    if genre:
+        lines.append("🎭 " + genre)
+    if size:
+        lines.append(human(size))
+    _dr = ", ".join(sorted({d for d, _ in copies}))
+    lines.append(f"📀 {_dr}" + (f"  (×{len(copies)})" if len(copies) > 1 else ""))
+    return "&#10;".join(_esc(l) for l in lines if l)
+
+
 # ── card grid ──────────────────────────────────────────────────────────────
 NCOL = 6
 cols = st.columns(NCOL)
@@ -465,11 +521,16 @@ for i, (r, copies) in enumerate(page_items):
     (wid, typ, title, artist, year, platform, size, drive, rel, cover, genre, ident) = r
     n_copies = len(copies)
     with cols[i % NCOL]:
+        _tip = _tooltip(r, copies)
         if cover and Path(cover).exists():
-            st.image(cover, use_container_width=True)
+            _b = _cover_b64(cover, Path(cover).stat().st_mtime)
+            st.markdown(
+                f'<img src="data:image/jpeg;base64,{_b}" title="{_tip}" '
+                f'style="width:100%;border-radius:6px;display:block" />',
+                unsafe_allow_html=True)
         else:
             st.markdown(
-                f'<div style="background:{PLACEHOLDER_BG.get(typ,"#333")};'
+                f'<div title="{_tip}" style="background:{PLACEHOLDER_BG.get(typ,"#333")};'
                 f'height:210px;border-radius:8px;display:flex;align-items:center;'
                 f'justify-content:center;font-size:3em">{TYPE_EMOJI.get(typ,"?")}</div>',
                 unsafe_allow_html=True)

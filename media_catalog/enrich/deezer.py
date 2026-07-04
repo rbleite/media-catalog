@@ -102,6 +102,45 @@ def _download_cover(url: str, work_id: int) -> str | None:
         return None
 
 
+def enrich_genres(conn, sleep: float = 0.12, progress=None) -> dict:
+    """Fill real musical genres (Rock/Pop/…) for albums. The MusicBrainz pass
+    left release *types* (Album/Single/EP) in the genre column — clear those and
+    resolve the Deezer genre_id of each album to a name."""
+    gm = {}
+    gdata = _http_json("https://api.deezer.com/genre")
+    for g in (gdata or {}).get("data", []):
+        gm[g.get("id")] = g.get("name")
+    conn.execute("UPDATE works SET genre=NULL WHERE type='album' AND"
+                 " genre IN ('Album','Single','EP','Worldwide','Broadcast','')")
+    conn.commit()
+    rows = conn.execute(
+        "SELECT id, title, artist FROM works WHERE type='album'"
+        " AND (genre IS NULL OR genre='')").fetchall()
+    matched = 0
+    now = __import__("datetime").datetime.now().isoformat(timespec="seconds")
+    for i, (wid, album, artist) in enumerate(rows):
+        a, al = clean_album(artist, album)
+        if not al:
+            continue
+        r = search_album(conn, a, al)          # cached where already searched
+        gid = r.get("genre_id") if r else None
+        name = gm.get(gid) if gid and gid > 0 else None
+        if name:
+            conn.execute("UPDATE works SET genre=?, updated_at=? WHERE id=?",
+                         (name, now, wid))
+            matched += 1
+        if i % 20 == 0:
+            conn.commit()
+            if progress:
+                progress(i + 1, len(rows), matched, 0)
+        if sleep:
+            time.sleep(sleep)
+    conn.commit()
+    if progress:
+        progress(len(rows), len(rows), matched, 0)
+    return {"matched": matched, "total": len(rows)}
+
+
 def enrich_albums(conn, limit: int | None = None, sleep: float = 0.15,
                   progress=None) -> dict:
     rows = conn.execute(
