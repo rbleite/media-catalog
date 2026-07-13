@@ -46,6 +46,18 @@ python3 -m venv .venv
 .venv/bin/streamlit run app.py --server.port 8503
 ```
 
+Or build a **clickable `.app` launcher** (recommended for daily use):
+
+```bash
+bash build_app.sh
+open ~/Applications/media-catalog.app
+```
+
+Double-click it in Finder (or drag it to the Dock) to launch the gallery on
+port 8503 — it auto-bumps to a free port if 8503 is busy, and opens your
+browser. Logs go to `~/Library/Logs/media-catalog.log`. The launcher finds
+streamlit in a project `.venv` if present, otherwise on your `PATH`.
+
 ### Windows
 
 Requirements: [Python 3.10+](https://www.python.org/downloads/) — during
