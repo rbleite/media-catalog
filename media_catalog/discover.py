@@ -212,16 +212,19 @@ def _norm_show(show: str) -> str:
     return re.sub(r"[^a-z0-9]", "", show.lower())
 
 
-def parse_tv(name: str) -> tuple[str, int, int | None] | None:
-    """Parse a TV release name → (show, season, episode|None), or None if it
-    isn't a recognisable TV item. Handles:
+def parse_tv(name: str, strong: bool = False) -> tuple[str, int, int | None] | None:
+    """Parse a TV release name → (show, season, episode|None), or None.
+
+    `strong=True` accepts ONLY the self-identifying patterns — explicit SxxEyy or
+    the literal word "Season N" — which virtually never false-match. Use it when
+    scanning outside a dedicated Series/ root, so lab/scientific names (`5Mm 63X`,
+    `18Dpf …`) aren't mistaken for episodes. `strong=False` also trusts the weaker
+    bare-Sxx and compact `401`/`2301` forms, safe only inside a Series/ root.
+
       Bones.S07E01…              → ('Bones', 7, 1)
-      Greys.Anatomy.S08E01E02…   → ('Greys Anatomy', 8, 1)  (first episode)
       Californication Season 5…  → ('Californication', 5, None)  season pack
-      Game.of.Thrones.S01.HDTV   → ('Game Of Thrones', 1, None)
-      Homeland.S01               → ('Homeland', 1, None)
-      the.simpsons.2301.hdtv     → ('The Simpsons', 23, 1)   compact SxxEyy
-      fringe.401.hdtv-lol        → ('Fringe', 4, 1)
+      Homeland.S01               → ('Homeland', 1, None)          weak
+      the.simpsons.2301.hdtv     → ('The Simpsons', 23, 1)        weak
     """
     stem = name
     for ext in (".mkv", ".mp4", ".avi", ".m4v", ".mov", ".wmv", ".ts"):
@@ -236,6 +239,8 @@ def parse_tv(name: str) -> tuple[str, int, int | None] | None:
     m = re.search(r"(.+?)\s(?:complete\s)?[Ss]eason\s(\d{1,2})", s, re.I)  # Season N
     if m:
         return _clean_show(m.group(1)), int(m.group(2)), None
+    if strong:                                    # weaker forms below aren't safe
+        return None                               # outside a Series/ root
     m = re.search(r"(.+?)\s[Ss](\d{1,2})(?:\s|$)", s)              # Sxx pack
     if m:
         return _clean_show(m.group(1)), int(m.group(2)), None
@@ -381,9 +386,10 @@ def scan_index(db_path: Path, label: str,
     for rel, is_dir, size, mtime in rows:
         if is_dir:
             continue
-        if _under_prefixes(rel, series_roots):
-            continue                         # handled by the TV-series pass below
-        ext = _ext(_basename(rel))
+        _b = _basename(rel)
+        if _under_prefixes(rel, series_roots) or parse_tv(_b, strong=True):
+            continue                         # a TV item — handled by pass 3
+        ext = _ext(_b)
         if ext in SUB_EXT and _under_prefixes(rel, movie_roots):
             movie_dir_has_sub.add(_parent(rel))
             continue
@@ -440,52 +446,66 @@ def scan_index(db_path: Path, label: str,
     # The layout is flat (Series/Show.S01E01…, Series/Show.Season 2…), so each
     # *direct child* of a series root is one episode/season unit. Parse its name,
     # group by show, and aggregate sizes + which seasons/episodes are present.
-    if series_roots:
-        def _series_root_of(rel: str) -> str | None:
-            for r in series_roots:
-                if rel == r or rel.startswith(r + "/"):
-                    return r
-            return None
+    def _under_series_root(rel: str) -> bool:
+        return any(rel == r or rel.startswith(r + "/") for r in series_roots)
 
-        topchild_show: dict[str, dict] = {}   # "<root>/<child>" -> parsed
+    def _is_junk(base: str) -> bool:
+        lb = base.lower()
+        return (base.startswith("._") or _ext(base) in SUB_EXT
+                or lb.startswith("sample")          # release preview clips
+                or "www." in lb or "legendas" in lb or base in _SKIP_NAMES)
+
+    # Find TV "nodes" = entries whose name identifies an episode/season/show.
+    # Inside a Series/ root the full parser is trusted (weak 401/2301 forms);
+    # everywhere else only the strong SxxEyy / "Season N" signal is, so scientific
+    # names (63X magnifications, sample ids) are never mistaken for TV.
+    tv_node: dict[str, tuple[str, int, int | None]] = {}   # rel -> (show,season,ep)
+    for rel, is_dir, size, mtime in rows:
+        base = _basename(rel)
+        if _is_junk(base):
+            continue
+        parsed = parse_tv(base, strong=not _under_series_root(rel))
+        if parsed and len(parsed[0]) >= 3:
+            tv_node[rel] = parsed
+
+    if tv_node:
         series_shows: dict[str, dict] = {}    # norm(show) -> work
-        for rel, is_dir, size, mtime in rows:
-            root = _series_root_of(rel)
-            if root is None:
-                continue
-            sub = rel[len(root):].strip("/")
-            if not sub:
-                continue
-            child = sub.split("/")[0]         # the direct child = the episode unit
-            ckey = f"{root}/{child}"
-            if ckey not in topchild_show:
-                lc = child.lower()
-                bad = (child.startswith("._") or _ext(child) in SUB_EXT
-                       or "www." in lc or "legendas" in lc
-                       or child in _SKIP_NAMES)
-                topchild_show[ckey] = None if bad else parse_tv(child)
-            parsed = topchild_show[ckey]
-            if not parsed:
-                continue
-            show, season, episode = parsed
+
+        def _show_work(show: str) -> dict:
             skey = _norm_show(show)
-            if not skey:
-                continue
             w = series_shows.get(skey)
             if w is None:
                 w = {"type": "series", "platform": None, "title": show,
                      "title_raw": show, "identifier": None,
-                     "rel_path": f"{root}/{show}", "drive_label": label,
+                     "rel_path": f"series/{skey}", "drive_label": label,
                      "size_bytes": 0, "mtime": 0.0,
                      "_seasons": set(), "_eps": set()}
                 series_shows[skey] = w
-            if not is_dir and size:
-                w["size_bytes"] += size
-            if (mtime or 0) > w["mtime"]:
-                w["mtime"] = mtime or 0.0
-            w["_seasons"].add(season)
-            if episode is not None:
-                w["_eps"].add((season, episode))
+            return w
+
+        # Attribute every file's size to the show of its nearest TV-node ancestor
+        # (or itself) — handles both flat episodes and Show/Season N/ nesting.
+        for rel, is_dir, size, mtime in rows:
+            if is_dir:
+                continue
+            parts = rel.split("/")
+            for k in range(len(parts), 0, -1):
+                anc = "/".join(parts[:k])
+                node = tv_node.get(anc)
+                if node:
+                    w = _show_work(node[0])
+                    if size:
+                        w["size_bytes"] += size
+                    if (mtime or 0) > w["mtime"]:
+                        w["mtime"] = mtime or 0.0
+                    break
+        # Record which seasons/episodes are present, from every TV node.
+        for show, season, episode in tv_node.values():
+            if _norm_show(show):
+                w = _show_work(show)
+                w["_seasons"].add(season)
+                if episode is not None:
+                    w["_eps"].add((season, episode))
         for skey, w in series_shows.items():
             seasons = sorted(w.pop("_seasons"))
             eps = w.pop("_eps")
