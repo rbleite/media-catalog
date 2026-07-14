@@ -185,17 +185,86 @@ def _clean_movie_title(name: str) -> tuple[str, int | None]:
     return (title or spaced), year
 
 
+# --- TV series layout -----------------------------------------------------
+# Folders holding TV episodes; a video under one of these is an episode, not a
+# movie. Matched on any drive where the path exists (like MOVIE_ROOTS).
+SERIES_ROOTS: list[str] = ["Series", "TV", "TV Shows", "TVShows", "Séries"]
+
+# scene release-group / site suffixes to strip off a show name
+_RELGRP_RE = re.compile(
+    r"[-\s]+(?:lol|fqm|2hd|ngpr|fov|dimension|asap|killers|crimson|"
+    r"crewsade|immerse|excellence|river|bajskorv|tla|notv|bia|evolve|"
+    r"legendasdivx|www\.[^\s]*).*$", re.I)
+
+
+def _clean_show(raw: str) -> str:
+    s = re.sub(r"[._]+", " ", raw)
+    s = _RELGRP_RE.sub("", s)                 # drop trailing release group / site
+    s = _TAG_RE.sub("", s)                    # drop quality/source tags
+    s = re.sub(r"\bcomplete\b", "", s, flags=re.I)
+    s = re.sub(r"\s+", " ", s).strip(" -._[](){}")
+    if s and s == s.lower():                  # title-case only all-lowercase names
+        s = s.title()
+    return s
+
+
+def _norm_show(show: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", show.lower())
+
+
+def parse_tv(name: str) -> tuple[str, int, int | None] | None:
+    """Parse a TV release name → (show, season, episode|None), or None if it
+    isn't a recognisable TV item. Handles:
+      Bones.S07E01…              → ('Bones', 7, 1)
+      Greys.Anatomy.S08E01E02…   → ('Greys Anatomy', 8, 1)  (first episode)
+      Californication Season 5…  → ('Californication', 5, None)  season pack
+      Game.of.Thrones.S01.HDTV   → ('Game Of Thrones', 1, None)
+      Homeland.S01               → ('Homeland', 1, None)
+      the.simpsons.2301.hdtv     → ('The Simpsons', 23, 1)   compact SxxEyy
+      fringe.401.hdtv-lol        → ('Fringe', 4, 1)
+    """
+    stem = name
+    for ext in (".mkv", ".mp4", ".avi", ".m4v", ".mov", ".wmv", ".ts"):
+        if stem.lower().endswith(ext):
+            stem = stem[: -len(ext)]
+            break
+    s = re.sub(r"[._]+", " ", stem)
+
+    m = re.search(r"(.+?)\s[Ss](\d{1,2})[Ee](\d{1,3})", s)          # SxxEyy
+    if m:
+        return _clean_show(m.group(1)), int(m.group(2)), int(m.group(3))
+    m = re.search(r"(.+?)\s(?:complete\s)?[Ss]eason\s(\d{1,2})", s, re.I)  # Season N
+    if m:
+        return _clean_show(m.group(1)), int(m.group(2)), None
+    m = re.search(r"(.+?)\s[Ss](\d{1,2})(?:\s|$)", s)              # Sxx pack
+    if m:
+        return _clean_show(m.group(1)), int(m.group(2)), None
+    # compact NNN / NNNN right before a source tag, e.g. '401 hdtv', '2301 hdtv'.
+    # Guard against years: a 4-digit 19xx/20xx is a year, not SxxEyy.
+    m = re.search(r"(.+?)\s(\d{3,4})\s(?:hdtv|hdrip|web|webrip|web-dl|720p|"
+                  r"480p|1080p|x264|xvid|divx|dvdrip|pdtv)", s, re.I)
+    if m:
+        num = m.group(2)
+        if not (len(num) == 4 and 1900 <= int(num) <= 2099):
+            season, episode = int(num[:-2]), int(num[-2:])
+            if season >= 1:
+                return _clean_show(m.group(1)), season, episode
+    return None
+
+
 def scan_index(db_path: Path, label: str,
                movie_roots: list[str] | None = None,
-               music_roots: list[str] | None = None) -> Iterator[dict]:
+               music_roots: list[str] | None = None,
+               series_roots: list[str] | None = None) -> Iterator[dict]:
     """Yield work dicts discovered in one drive-xray db (latest snapshot).
 
     Games are found by GAME_ROOTS + title-id patterns (folder- or file-unit).
-    Movies/albums are only catalogued under `movie_roots`/`music_roots`
-    (default = module MOVIE_ROOTS/MUSIC_ROOTS) so scattered clips, camera
+    Movies/albums/series are only catalogued under `movie_roots`/`music_roots`/
+    `series_roots` (defaults = module constants) so scattered clips, camera
     footage and node_modules never masquerade as titles."""
     movie_roots = MOVIE_ROOTS if movie_roots is None else movie_roots
     music_roots = MUSIC_ROOTS if music_roots is None else music_roots
+    series_roots = SERIES_ROOTS if series_roots is None else series_roots
 
     conn = sqlite3.connect(db_path)
     try:
@@ -312,6 +381,8 @@ def scan_index(db_path: Path, label: str,
     for rel, is_dir, size, mtime in rows:
         if is_dir:
             continue
+        if _under_prefixes(rel, series_roots):
+            continue                         # handled by the TV-series pass below
         ext = _ext(_basename(rel))
         if ext in SUB_EXT and _under_prefixes(rel, movie_roots):
             movie_dir_has_sub.add(_parent(rel))
@@ -364,6 +435,63 @@ def scan_index(db_path: Path, label: str,
         w["size_bytes"] = album_folder_size.get(folder)
         w["mtime"] = album_folder_mtime.get(folder, 0.0)
         yield w
+
+    # --- pass 3: TV series, scoped to series roots --------------------------
+    # The layout is flat (Series/Show.S01E01…, Series/Show.Season 2…), so each
+    # *direct child* of a series root is one episode/season unit. Parse its name,
+    # group by show, and aggregate sizes + which seasons/episodes are present.
+    if series_roots:
+        def _series_root_of(rel: str) -> str | None:
+            for r in series_roots:
+                if rel == r or rel.startswith(r + "/"):
+                    return r
+            return None
+
+        topchild_show: dict[str, dict] = {}   # "<root>/<child>" -> parsed
+        series_shows: dict[str, dict] = {}    # norm(show) -> work
+        for rel, is_dir, size, mtime in rows:
+            root = _series_root_of(rel)
+            if root is None:
+                continue
+            sub = rel[len(root):].strip("/")
+            if not sub:
+                continue
+            child = sub.split("/")[0]         # the direct child = the episode unit
+            ckey = f"{root}/{child}"
+            if ckey not in topchild_show:
+                lc = child.lower()
+                bad = (child.startswith("._") or _ext(child) in SUB_EXT
+                       or "www." in lc or "legendas" in lc
+                       or child in _SKIP_NAMES)
+                topchild_show[ckey] = None if bad else parse_tv(child)
+            parsed = topchild_show[ckey]
+            if not parsed:
+                continue
+            show, season, episode = parsed
+            skey = _norm_show(show)
+            if not skey:
+                continue
+            w = series_shows.get(skey)
+            if w is None:
+                w = {"type": "series", "platform": None, "title": show,
+                     "title_raw": show, "identifier": None,
+                     "rel_path": f"{root}/{show}", "drive_label": label,
+                     "size_bytes": 0, "mtime": 0.0,
+                     "_seasons": set(), "_eps": set()}
+                series_shows[skey] = w
+            if not is_dir and size:
+                w["size_bytes"] += size
+            if (mtime or 0) > w["mtime"]:
+                w["mtime"] = mtime or 0.0
+            w["_seasons"].add(season)
+            if episode is not None:
+                w["_eps"].add((season, episode))
+        for skey, w in series_shows.items():
+            seasons = sorted(w.pop("_seasons"))
+            eps = w.pop("_eps")
+            w["extra_json"] = json.dumps(
+                {"have_seasons": seasons, "have_episodes": len(eps)})
+            yield w
 
 
 def drive_roots() -> dict:

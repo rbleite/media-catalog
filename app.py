@@ -80,9 +80,11 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-TYPE_EMOJI = {"movie": "🎬", "album": "💿", "game": "🎮"}
-TYPE_LABEL = {"movie": "Filmes", "album": "Álbuns", "game": "Jogos"}
-PLACEHOLDER_BG = {"movie": "#37474f", "album": "#4a148c", "game": "#1b5e20"}
+TYPE_EMOJI = {"movie": "🎬", "album": "💿", "game": "🎮", "series": "📺"}
+TYPE_LABEL = {"movie": "Filmes", "album": "Álbuns", "game": "Jogos",
+              "series": "Séries"}
+PLACEHOLDER_BG = {"movie": "#37474f", "album": "#4a148c", "game": "#1b5e20",
+                  "series": "#0d47a1"}
 
 
 def human(n: int | None) -> str:
@@ -212,6 +214,18 @@ if config.has_tmdb():
         def _cb(i, n, m, ms):
             prog.progress(i / max(n, 1), text=f"{i}/{n} · {m} capas")
         res = tmdb.enrich_movies(conn, config.get("tmdb_api_key"), progress=_cb)
+        st.sidebar.success(f"✓ {res['matched']} capas · {res['missed']} sem match")
+        st.cache_resource.clear()
+        st.rerun()
+    _pends = conn.execute(
+        "SELECT COUNT(*) FROM works WHERE type='series' AND enriched=0").fetchone()[0]
+    if st.sidebar.button(f"📺 Enriquecer séries via TMDB ({_pends} por fazer)",
+                         disabled=_pends == 0):
+        from media_catalog.enrich import tmdb
+        prog = st.sidebar.progress(0.0, text="A enriquecer séries…")
+        def _cbs(i, n, m, ms):
+            prog.progress(i / max(n, 1), text=f"{i}/{n} · {m} capas")
+        res = tmdb.enrich_series(conn, config.get("tmdb_api_key"), progress=_cbs)
         st.sidebar.success(f"✓ {res['matched']} capas · {res['missed']} sem match")
         st.cache_resource.clear()
         st.rerun()
@@ -455,7 +469,7 @@ def _dup_key(r) -> str:
     """Identity of a title across drives: the canonical enriched id when we
     have one, else type + normalised title + (year/platform/artist)."""
     ident = r[11]
-    if ident and ident.split(":", 1)[0] in ("tmdb", "igdb", "mbid"):
+    if ident and ident.split(":", 1)[0] in ("tmdb", "tmdbtv", "igdb", "mbid"):
         return ident
     norm = re.sub(r"[^a-z0-9]", "", (r[2] or "").lower())
     return f"{r[1]}|{norm}|{r[4] or r[5] or r[3] or ''}"
@@ -548,7 +562,7 @@ page_items = items[(page - 1) * PER_PAGE: page * PER_PAGE]
 
 # ── detail + manual correction dialog ──────────────────────────────────────
 def _sibling_ids(wid, typ, title, ident):
-    if ident and ident.split(":", 1)[0] in ("tmdb", "igdb", "mbid"):
+    if ident and ident.split(":", 1)[0] in ("tmdb", "tmdbtv", "igdb", "mbid"):
         rs = conn.execute("SELECT id FROM works WHERE identifier=?", (ident,)).fetchall()
     else:
         rs = conn.execute("SELECT id FROM works WHERE type=? AND lower(title)=lower(?)",
@@ -596,15 +610,29 @@ def show_detail(wid):
                           ("🔤 legendas" if has_subs else ""),
                           (f"🆕 {_fmt_date(mtime)}" if mtime else "")] if x)
         st.caption(meta)
+        _d = {}
         if extra:
             try:
-                d = _json.loads(extra)
-                if d.get("overview"):
-                    st.write(d["overview"])
-                if d.get("vote_average"):
-                    st.caption(f"⭐ {d['vote_average']}")
+                _d = _json.loads(extra)
+                if _d.get("overview"):
+                    st.write(_d["overview"])
+                if _d.get("vote_average"):
+                    st.caption(f"⭐ {_d['vote_average']}")
             except Exception:
-                pass
+                _d = {}
+        # series: which seasons/episodes you own vs the show's total
+        if typ == "series":
+            _hs = _d.get("have_seasons") or []
+            _he = _d.get("have_episodes")
+            _ts = _d.get("tmdb_seasons")
+            _parts = []
+            if _hs:
+                _parts.append("temporadas que tens: " + ", ".join(map(str, _hs))
+                              + (f" de {_ts}" if _ts else ""))
+            if _he:
+                _parts.append(f"{_he} episódios no disco")
+            if _parts:
+                st.caption("📺 " + "  ·  ".join(_parts))
         st.caption(f"Fonte: `{provider or '—'}`  ·  `{ident or ''}`")
         # external links (movies) — explore on TMDB / IMDb
         if typ == "movie" and ident and ident.startswith("tmdb:"):
@@ -616,6 +644,9 @@ def show_detail(wid):
                 if _imdb:
                     links.insert(0, f"**[▶ IMDb](https://www.imdb.com/title/{_imdb}/)**")
             st.markdown("🔗 " + "  ·  ".join(links))
+        elif typ == "series" and ident and ident.startswith("tmdbtv:"):
+            _tv = ident.split(":", 1)[1]
+            st.markdown(f"🔗 [TMDB](https://www.themoviedb.org/tv/{_tv})")
 
     sibs = _sibling_ids(wid, typ, title, ident)
     st.markdown(f"**Cópias ({len(sibs)}):**")
@@ -666,6 +697,10 @@ def show_detail(wid):
                 from media_catalog.enrich import tmdb
                 cands = [("tmdb", c) for c in
                          tmdb.search_candidates(dq, None, config.get("tmdb_api_key"), lang)]
+            elif typ == "series" and config.has_tmdb():
+                from media_catalog.enrich import tmdb
+                cands = [("tmdbtv", c) for c in
+                         tmdb.search_candidates_tv(dq, config.get("tmdb_api_key"), lang)]
             elif typ == "game" and config.has_igdb():
                 from media_catalog.enrich import igdb
                 tok = igdb.get_token()
@@ -684,6 +719,10 @@ def show_detail(wid):
             pp = c.get("poster_path")
             img = f"https://image.tmdb.org/t/p/w154{pp}" if pp else None
             label = f"{c.get('title')} ({(c.get('release_date') or '')[:4]})"
+        elif prov == "tmdbtv":
+            pp = c.get("poster_path")
+            img = f"https://image.tmdb.org/t/p/w154{pp}" if pp else None
+            label = f"{c.get('name')} ({(c.get('first_air_date') or '')[:4]})"
         elif prov == "igdb":
             iid = (c.get("cover") or {}).get("image_id")
             img = f"https://images.igdb.com/igdb/image/upload/t_cover_small/{iid}.jpg" if iid else None
@@ -700,6 +739,8 @@ def show_detail(wid):
             for sid in tgt:
                 if prov == "tmdb":
                     tmdb.apply_candidate(conn, sid, c, config.get("tmdb_api_key"))
+                elif prov == "tmdbtv":
+                    tmdb.apply_candidate_tv(conn, sid, c, config.get("tmdb_api_key"))
                 elif prov == "igdb":
                     igdb.apply_candidate(conn, sid, c, config.get("igdb_client_id"))
                 else:

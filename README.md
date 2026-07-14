@@ -1,8 +1,8 @@
 # media-catalog
 
-**A visual gallery of your movies, albums (MP3/CD) and console games** — built
-on top of the [drive-xray](../drive-xray) index (no re-scan), enriched with
-covers and metadata from TMDB / IGDB / MusicBrainz / Deezer.
+**A visual gallery of your movies, TV series, albums (MP3/CD) and console
+games** — built on top of the [drive-xray](../drive-xray) index (no re-scan),
+enriched with covers and metadata from TMDB / IGDB / MusicBrainz / Deezer.
 
 Companion to drive-xray: that tool is about *files* (sizes, dupes); this one is
 about *titles* — a unified `works` model of `movie | album | game`, browsable,
@@ -85,6 +85,10 @@ library.
    - **Movies**: one work per *release folder*; a last-year title parser +
      release-tag stripper (`2001 A Space Odyssey 1968 720p` → title=`2001 A
      Space Odyssey`, year=`1968`).
+   - **TV series**: one work per *show* (not per episode), under `SERIES_ROOTS`
+     (`Series/`, `TV/`…). Parses `Show.S01E02`, `Show Season 3` packs, and the
+     compact `show.401`/`show.2301` forms, grouping episodes/seasons; TMDB TV
+     enrichment attaches poster/overview and the total season count.
    - **Albums**: one per audio folder; `artist` = the folder above it.
    - Movies/albums are scoped to `MOVIE_ROOTS` / `MUSIC_ROOTS` so loose clips,
      `node_modules` and game internals never masquerade as titles.

@@ -147,25 +147,29 @@ def upsert_work(conn: sqlite3.Connection, w: dict) -> None:
         conn.execute(
             "INSERT INTO works (type, title, title_raw, artist, year, platform,"
             " identifier, rel_path, drive_label, size_bytes, mtime,"
-            " has_subtitles, updated_at)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            " has_subtitles, extra_json, updated_at)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (w["type"], w["title"], w.get("title_raw"), w.get("artist"),
              w.get("year"), w.get("platform"), w.get("identifier"),
              w["rel_path"], w["drive_label"], w.get("size_bytes"),
-             w.get("mtime"), int(w.get("has_subtitles", 0)), now),
+             w.get("mtime"), int(w.get("has_subtitles", 0)),
+             w.get("extra_json"), now),
         )
     else:
-        # keep enrichment; refresh only the index-derived fields
+        # keep enrichment; refresh only the index-derived fields. extra_json holds
+        # provider payload once enriched, but the discovery-time 'have_*' summary
+        # (series seasons/episodes) before that — so refresh it only while enriched=0.
         conn.execute(
             "UPDATE works SET type=?, title_raw=?, artist=?, platform=?,"
             " identifier=?, size_bytes=?, mtime=?, has_subtitles=?, updated_at=?,"
             " title=CASE WHEN enriched=1 THEN title ELSE ? END,"
-            " year=CASE WHEN enriched=1 THEN year ELSE ? END"
+            " year=CASE WHEN enriched=1 THEN year ELSE ? END,"
+            " extra_json=CASE WHEN enriched=1 THEN extra_json ELSE ? END"
             " WHERE id=?",
             (w["type"], w.get("title_raw"), w.get("artist"),
              w.get("platform"), w.get("identifier"), w.get("size_bytes"),
              w.get("mtime"), int(w.get("has_subtitles", 0)), now,
-             w["title"], w.get("year"), existing[0]),
+             w["title"], w.get("year"), w.get("extra_json"), existing[0]),
         )
 
 
