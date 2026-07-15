@@ -12,6 +12,8 @@ import json
 import sqlite3
 from pathlib import Path
 
+from media_catalog import config as _config
+
 SCHEMA_VERSION = 2
 
 SCHEMA = """
@@ -57,7 +59,9 @@ CREATE TABLE IF NOT EXISTS enrich_cache (
 CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT);
 """
 
-DEFAULT_CATALOG = Path.home() / "tools" / "media-catalog" / "catalog.db"
+# Central catalog location — lives in the shared/synced data dir when one is
+# configured (see media_catalog.config), else the legacy in-repo path.
+DEFAULT_CATALOG = _config.CATALOG_DB
 
 
 

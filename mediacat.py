@@ -158,6 +158,11 @@ def main() -> None:
     pm.add_argument("file", help="patch file from export-patch")
 
     args = p.parse_args()
+    # first run with a shared/synced data dir: migrate legacy catalog+covers
+    from media_catalog import config as _config
+    msg = _config.ensure_data_dir()
+    if msg:
+        print(f"  {msg}", file=sys.stderr)
     {"scan": cmd_scan, "summary": cmd_summary, "id3": cmd_id3, "nfo": cmd_nfo,
      "export-patch": cmd_export_patch, "import-patch": cmd_import_patch}[args.cmd](args)
 
