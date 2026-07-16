@@ -7,6 +7,7 @@ tells you which drive each title is on, and can enrich movies via TMDB.
 """
 from __future__ import annotations
 
+import os
 import re
 import sqlite3
 import subprocess
@@ -100,6 +101,11 @@ def human(n: int | None) -> str:
 
 @st.cache_resource
 def _conn() -> sqlite3.Connection:
+    # First run with a shared data dir configured: copy the legacy
+    # catalog/covers into it (never deletes the originals).
+    _migr = config.ensure_data_dir()
+    if _migr:
+        st.toast("📦 " + _migr)
     # check_same_thread=False: Streamlit serves reruns from a thread pool, so
     # the single cached connection must be usable across threads.
     return C.open_catalog(C.DEFAULT_CATALOG, check_same_thread=False)
@@ -326,6 +332,35 @@ if config.has_tmdb():
                            f"{res['no_id']} .nfo sem id ({res['skipped_offline']} offline)")
         st.cache_resource.clear()
         st.rerun()
+
+# ── settings: shared data dir (sync between machines) ──────────────────────
+st.sidebar.divider()
+with st.sidebar.expander("⚙️ Sincronização entre máquinas"):
+    _dd = config.data_dir()
+    if _dd:
+        st.caption(f"Catálogo central em:\n`{_dd}`")
+        if config.read_app_config().get("data_dir") is None and \
+                not os.environ.get("MEDIACAT_DATA_DIR"):
+            st.caption("(herdado da pasta de .db do drive-xray — OneDrive/etc.)")
+    else:
+        st.caption("Catálogo local a esta máquina:\n"
+                   f"`{C.DEFAULT_CATALOG}`\n\n"
+                   "Define uma pasta sincronizada (OneDrive / Google Drive / "
+                   "Dropbox) para veres o mesmo catálogo em todos os "
+                   "computadores — ou configura a pasta de .db no drive-xray, "
+                   "que esta app herda automaticamente.")
+    _new_dd = st.text_input("Pasta do catálogo central",
+                            value=str(_dd) if _dd else "",
+                            key="mc_data_dir",
+                            placeholder=r"ex.: C:\Users\tu\OneDrive\media-catalog")
+    if st.button("Guardar pasta", key="mc_data_dir_save",
+                 disabled=not _new_dd.strip()):
+        _cfg = config.read_app_config()
+        _cfg["data_dir"] = _new_dd.strip()
+        config.write_app_config(_cfg)
+        st.success("Guardado. Fecha e volta a abrir a app para aplicar "
+                   "(o catálogo e as capas existentes são copiados na "
+                   "primeira abertura).")
 
 # ── maintenance: re-scan the drive-xray indexes for new titles ─────────────
 st.sidebar.divider()
@@ -596,7 +631,8 @@ def show_detail(wid):
      provider, extra, status, mtime, has_subs) = w
     c1, c2 = st.columns([1, 2])
     with c1:
-        if cover and Path(cover).exists():
+        cover = config.resolve_cover(cover)
+        if cover:
             st.image(cover, use_container_width=True)
         else:
             st.markdown(f'<div style="background:{PLACEHOLDER_BG.get(typ,"#333")};'
@@ -835,7 +871,8 @@ if _recent and page == 1:
         rcols = st.columns(len(_recent))
         for rc, (rid, rtyp, rtitle, rcover, rmt) in zip(rcols, _recent):
             with rc:
-                if rcover and Path(rcover).exists():
+                rcover = config.resolve_cover(rcover)
+                if rcover:
                     _rb = _cover_b64(rcover, Path(rcover).stat().st_mtime)
                     st.markdown(
                         f'<div class="mc-cover"><img src="data:image/jpeg;base64,{_rb}" '
@@ -862,7 +899,8 @@ for row_start in range(0, len(page_items), NCOL):
         with col:
             _tip = _tooltip(r, copies)
             _title = _esc(title or "")
-            if cover and Path(cover).exists():
+            cover = config.resolve_cover(cover)
+            if cover:
                 _b = _cover_b64(cover, Path(cover).stat().st_mtime)
                 st.markdown(
                     f'<div class="mc-cover"><img src="data:image/jpeg;base64,{_b}" '
