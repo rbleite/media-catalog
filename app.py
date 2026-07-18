@@ -179,6 +179,33 @@ _drives = [r[0] for r in conn.execute(
     "SELECT DISTINCT drive_label FROM works ORDER BY drive_label")]
 sel_drives = st.sidebar.multiselect("Drive", _drives, default=[])
 
+# ── inventory: which drives are in the catalogue, and how fresh ────────────
+with st.sidebar.expander(f"📀 Drives no catálogo ({len(_drives)})"):
+    _scans = C.scan_times(conn)
+    _inv = conn.execute(
+        "SELECT drive_label, COUNT(*), COALESCE(SUM(size_bytes), 0)"
+        " FROM works WHERE COALESCE(hidden,0)=0"
+        " GROUP BY drive_label ORDER BY drive_label").fetchall()
+    for _dl, _dn, _dsz in _inv:
+        _last = (_scans.get(_dl) or "").replace("T", " ")[:16]
+        st.markdown(f"**{_dl}** — {_dn} títulos · {human(_dsz)}  \n"
+                    f"🕒 último scan: {_last or '— (antes desta versão)'}")
+    if not _inv:
+        st.caption("Catálogo vazio — usa 🔄 Atualizar catálogo.")
+    # drive-xray drives that were never scanned into the catalogue
+    try:
+        import json as _json_r
+        from media_catalog.discover import DX_REGISTRY as _dxreg
+        _reg = _json_r.loads(_dxreg.read_text(encoding="utf-8"))
+        _known = {m.get("label", "?") for m in _reg.get("drives", {}).values()}
+        _missing = sorted(_known - {d for d, *_ in _inv})
+        if _missing:
+            st.caption("⚠️ Indexadas no drive-xray mas ainda fora do "
+                       "catálogo: " + ", ".join(_missing)
+                       + " — usa 🔄 Atualizar catálogo.")
+    except Exception:
+        pass
+
 query = st.sidebar.text_input("🔍 Pesquisar título / artista", "")
 
 _yr = conn.execute(
