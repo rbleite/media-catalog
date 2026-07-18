@@ -7,6 +7,7 @@ tells you which drive each title is on, and can enrich movies via TMDB.
 """
 from __future__ import annotations
 
+import importlib
 import os
 import re
 import sqlite3
@@ -15,6 +16,18 @@ import sys
 from pathlib import Path
 
 import streamlit as st
+
+# After an update (the sidebar button or a git pull) with the app still
+# running, Streamlit re-executes this file but `import` returns the modules
+# already in memory, crashing on names that only exist in the new code.
+# Reload any whose file on disk changed since it was imported.
+import media_catalog.config
+import media_catalog.catalog
+for _m in (media_catalog.config, media_catalog.catalog):
+    _mt = os.path.getmtime(_m.__file__)
+    if getattr(_m, "_loaded_mtime", None) != _mt:
+        importlib.reload(_m)
+        _m._loaded_mtime = _mt
 
 from media_catalog import catalog as C
 from media_catalog import config
@@ -454,6 +467,7 @@ with st.sidebar.expander("💾 Correções (backup/restauro)", expanded=False):
 
 with st.sidebar.expander("🔄 Atualizações (GitHub)", expanded=False):
     import update as _upd
+    _upd = importlib.reload(_upd)  # same staleness concern as the top imports
     if st.button("Verificar atualizações", key="upd_check", use_container_width=True):
         st.session_state["upd_status"] = _upd.check_updates()
     _us = st.session_state.get("upd_status")
