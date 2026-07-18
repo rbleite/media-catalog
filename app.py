@@ -114,15 +114,21 @@ def human(n: int | None) -> str:
 
 @st.cache_resource
 def _conn() -> sqlite3.Connection:
-    # First run with a shared data dir configured: copy the legacy
-    # catalog/covers into it (never deletes the originals).
-    _migr = config.ensure_data_dir()
-    if _migr:
-        st.toast("📦 " + _migr)
     # check_same_thread=False: Streamlit serves reruns from a thread pool, so
     # the single cached connection must be usable across threads.
     return C.open_catalog(C.DEFAULT_CATALOG, check_same_thread=False)
 
+
+# First run with a shared data dir configured: copy the legacy catalog/covers
+# into it (never deletes the originals). Must stay OUTSIDE _conn(): Streamlit
+# forbids st.* elements inside cache_resource functions (raises
+# CacheReplayClosureError on cache hits), and the migration has to happen
+# before the catalog is opened.
+if not st.session_state.get("mc_data_dir_ready"):
+    _migr = config.ensure_data_dir()
+    if _migr:
+        st.toast("📦 " + _migr)
+    st.session_state["mc_data_dir_ready"] = True
 
 conn = _conn()
 
