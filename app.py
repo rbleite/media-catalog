@@ -192,12 +192,11 @@ with st.sidebar.expander(f"📀 Drives no catálogo ({len(_drives)})"):
                     f"🕒 último scan: {_last or '— (antes desta versão)'}")
     if not _inv:
         st.caption("Catálogo vazio — usa 🔄 Atualizar catálogo.")
-    # drive-xray drives that were never scanned into the catalogue
+    # drive-xray drives that were never scanned into the catalogue —
+    # includes .db files synced from other machines (OneDrive/etc.)
     try:
-        import json as _json_r
-        from media_catalog.discover import DX_REGISTRY as _dxreg
-        _reg = _json_r.loads(_dxreg.read_text(encoding="utf-8"))
-        _known = {m.get("label", "?") for m in _reg.get("drives", {}).values()}
+        from media_catalog.discover import registered_dbs as _reg_dbs
+        _known = {label for _, label in _reg_dbs()}
         _missing = sorted(_known - {d for d, *_ in _inv})
         if _missing:
             st.caption("⚠️ Indexadas no drive-xray mas ainda fora do "
