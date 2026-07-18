@@ -59,6 +59,7 @@ def cmd_scan(args) -> None:
         for work in D.scan_index(db, label):
             C.upsert_work(conn, work)
             n += 1
+        C.set_scan_time(conn, label)
         conn.commit()
         print(f"  {label:<16} {n:>6} works  ({db.name})", file=sys.stderr)
         total += n

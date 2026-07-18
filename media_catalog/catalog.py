@@ -136,6 +136,21 @@ def open_catalog(path: Path = DEFAULT_CATALOG,
     return conn
 
 
+def set_scan_time(conn: sqlite3.Connection, drive_label: str,
+                  when: str | None = None) -> None:
+    """Record when a drive's index was last scanned into the catalog
+    (shown in the app's "Drives no catálogo" panel)."""
+    when = when or datetime.datetime.now().isoformat(timespec="seconds")
+    conn.execute("INSERT OR REPLACE INTO meta (k, v) VALUES (?, ?)",
+                 (f"scanned::{drive_label}", when))
+
+
+def scan_times(conn: sqlite3.Connection) -> dict:
+    """{drive_label: iso-timestamp} of each drive's last catalog scan."""
+    return {k.split("::", 1)[1]: v for k, v in conn.execute(
+        "SELECT k, v FROM meta WHERE k LIKE 'scanned::%'")}
+
+
 def upsert_work(conn: sqlite3.Connection, w: dict) -> None:
     """Insert or update a work, keyed on (drive_label, rel_path). Enrichment
     fields are preserved on update unless explicitly provided — a re-scan of
