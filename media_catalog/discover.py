@@ -11,10 +11,39 @@ import json
 import os
 import re
 import sqlite3
+import sys
 from pathlib import Path
 from typing import Iterator
 
 DX_REGISTRY = Path.home() / ".config" / "drive-xray" / "registry.json"
+
+
+def _dx_module():
+    """drive-xray's Python engine, when importable or checked out next to this
+    project (~/tools/drive-xray, or $DRIVE_XRAY_HOME). Borrowed for its
+    `resolve_root` — the content-fingerprint mount resolution that finds a
+    drive indexed on another OS at its CURRENT mount point (e.g. indexed on
+    macOS at /Volumes/X, plugged into Windows as E:\\). media-catalog stays
+    fully usable without it; mounted-drive detection just falls back to the
+    literal stored path, as before."""
+    try:
+        import drive_xray
+        return drive_xray
+    except ImportError:
+        pass
+    env = os.environ.get("DRIVE_XRAY_HOME")
+    cands = [Path(env)] if env else []
+    cands += [Path(__file__).resolve().parent.parent.parent / "drive-xray",
+              Path.home() / "tools" / "drive-xray"]
+    for cand in cands:
+        if (cand / "drive_xray.py").is_file():
+            sys.path.insert(0, str(cand))
+            try:
+                import drive_xray
+                return drive_xray
+            except Exception:
+                return None
+    return None
 
 # --- extensions -----------------------------------------------------------
 # NB: no bare "ts" — on a dev machine that's overwhelmingly TypeScript, not
@@ -516,8 +545,13 @@ def scan_index(db_path: Path, label: str,
 
 def drive_roots() -> dict:
     """Map drive_label -> absolute root_path for every registered drive-xray db
-    whose root is mounted *right now*. Used by the opportunistic ID3 pass to
-    reach the real files (media-catalog is otherwise index-only)."""
+    whose root is mounted *right now*. Used by the opportunistic ID3/NFO passes
+    to reach the real files (media-catalog is otherwise index-only).
+
+    The stored root_path is as it was at index time (/Volumes/X on macOS,
+    E:\\ on Windows); when drive-xray's engine is available its resolve_root
+    maps it to wherever the volume is mounted on THIS machine, so drives
+    indexed on the other OS are found too."""
     out: dict = {}
     if not DX_REGISTRY.exists():
         return out
@@ -525,6 +559,7 @@ def drive_roots() -> dict:
         data = json.loads(DX_REGISTRY.read_text(encoding="utf-8"))
     except Exception:
         return out
+    dx = _dx_module()
     for key, meta in data.get("drives", {}).items():
         db = Path(meta.get("db", key))
         if not db.exists():
@@ -533,9 +568,15 @@ def drive_roots() -> dict:
         try:
             conn = sqlite3.connect(db)
             row = conn.execute("SELECT root_path FROM drive LIMIT 1").fetchone()
+            root = row[0] if row and row[0] else None
+            if root and dx is not None:
+                try:
+                    root = str(dx.resolve_root(conn, root))
+                except Exception:
+                    pass  # fall back to the stored path
             conn.close()
         except Exception:
             continue
-        if row and row[0] and os.path.isdir(row[0]):
-            out[label] = row[0]
+        if root and os.path.isdir(root):
+            out[label] = root
     return out
