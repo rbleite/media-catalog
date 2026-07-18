@@ -22,15 +22,9 @@ DX_REGISTRY = Path.home() / ".config" / "drive-xray" / "registry.json"
 
 
 def _registry_drives() -> list[tuple[Path, str]]:
-    if not DX_REGISTRY.exists():
-        return []
-    data = json.loads(DX_REGISTRY.read_text(encoding="utf-8"))
-    out = []
-    for key, meta in data.get("drives", {}).items():
-        db = Path(meta.get("db", key))
-        if db.exists():
-            out.append((db, meta.get("label", db.stem)))
-    return out
+    # local registry + every .db in drive-xray's synced db folder, so
+    # indexes created on another machine are scanned without a manual import
+    return D.registered_dbs()
 
 
 def _db_label(db: Path) -> str:

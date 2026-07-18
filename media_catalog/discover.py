@@ -543,8 +543,44 @@ def scan_index(db_path: Path, label: str,
             yield w
 
 
+def registered_dbs() -> list:
+    """Every drive-xray .db this machine can see, as [(db_path, label)]:
+    the machine-local registry PLUS every valid *.db in drive-xray's
+    configured db folder (usually the OneDrive/GDrive/Dropbox share).
+    Indexes created on ANOTHER machine live in that synced folder but are
+    absent from the local registry until manually imported — without this
+    union, a re-scan silently only saw the current computer's drives."""
+    out: dict = {}
+    if DX_REGISTRY.exists():
+        try:
+            data = json.loads(DX_REGISTRY.read_text(encoding="utf-8"))
+            for key, meta in data.get("drives", {}).items():
+                db = Path(meta.get("db", key))
+                if db.exists():
+                    out[db.resolve()] = meta.get("label", db.stem)
+        except Exception:
+            pass
+    from media_catalog.config import _dx_db_dir
+    dxdir = _dx_db_dir()
+    if dxdir and dxdir.is_dir():
+        for db in sorted(dxdir.glob("*.db")):
+            rp = db.resolve()
+            if rp in out:
+                continue
+            try:
+                conn = sqlite3.connect(db)
+                row = conn.execute(
+                    "SELECT label FROM drive LIMIT 1").fetchone()
+                conn.close()
+            except Exception:
+                continue           # not a drive-xray db (corrupt, other app)
+            if row is not None:
+                out[rp] = row[0] or db.stem
+    return sorted(out.items(), key=lambda kv: kv[1].lower())
+
+
 def drive_roots() -> dict:
-    """Map drive_label -> absolute root_path for every registered drive-xray db
+    """Map drive_label -> absolute root_path for every visible drive-xray db
     whose root is mounted *right now*. Used by the opportunistic ID3/NFO passes
     to reach the real files (media-catalog is otherwise index-only).
 
@@ -553,18 +589,8 @@ def drive_roots() -> dict:
     maps it to wherever the volume is mounted on THIS machine, so drives
     indexed on the other OS are found too."""
     out: dict = {}
-    if not DX_REGISTRY.exists():
-        return out
-    try:
-        data = json.loads(DX_REGISTRY.read_text(encoding="utf-8"))
-    except Exception:
-        return out
     dx = _dx_module()
-    for key, meta in data.get("drives", {}).items():
-        db = Path(meta.get("db", key))
-        if not db.exists():
-            continue
-        label = meta.get("label", db.stem)
+    for db, label in registered_dbs():
         try:
             conn = sqlite3.connect(db)
             row = conn.execute("SELECT root_path FROM drive LIMIT 1").fetchone()
