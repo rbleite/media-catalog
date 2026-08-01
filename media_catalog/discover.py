@@ -241,6 +241,12 @@ def _norm_show(show: str) -> str:
     return re.sub(r"[^a-z0-9]", "", show.lower())
 
 
+# release / quality / source tags that follow an episode marker
+_SOURCE_TAGS = (r"(?:hdtv|hdrip|web|webrip|web-dl|720p|480p|1080p|2160p|"
+                r"x264|x265|h264|hevc|xvid|divx|dvdrip|bluray|pdtv|repack|"
+                r"proper|internal)")
+
+
 def parse_tv(name: str, strong: bool = False) -> tuple[str, int, int | None] | None:
     """Parse a TV release name → (show, season, episode|None), or None.
 
@@ -273,10 +279,20 @@ def parse_tv(name: str, strong: bool = False) -> tuple[str, int, int | None] | N
     m = re.search(r"(.+?)\s[Ss](\d{1,2})(?:\s|$)", s)              # Sxx pack
     if m:
         return _clean_show(m.group(1)), int(m.group(2)), None
+    # '1x01' / '2x05' — common on older and European releases, and currently
+    # invisible to the catalogue. Weak by design, since print and canvas sizes
+    # share the shape ('photo 4x6 print', 'IMG 20x30 canvas'), so it must both
+    # stay inside a Series/ root AND sit where an episode marker sits: at the
+    # end, before a source tag, or joined to a second marker ('6x17-6x18').
+    # The leading \s also keeps it off resolutions — in '1920x1080' no 1-2
+    # digit run begins right after whitespace.
+    m = re.search(rf"(.+?)\s(\d{{1,2}})[xX](\d{{1,3}})"
+                  rf"(?:\s+{_SOURCE_TAGS}|[-–]\s*\d|\s*$)", s, re.I)
+    if m:
+        return _clean_show(m.group(1)), int(m.group(2)), int(m.group(3))
     # compact NNN / NNNN right before a source tag, e.g. '401 hdtv', '2301 hdtv'.
     # Guard against years: a 4-digit 19xx/20xx is a year, not SxxEyy.
-    m = re.search(r"(.+?)\s(\d{3,4})\s(?:hdtv|hdrip|web|webrip|web-dl|720p|"
-                  r"480p|1080p|x264|xvid|divx|dvdrip|pdtv)", s, re.I)
+    m = re.search(rf"(.+?)\s(\d{{3,4}})\s{_SOURCE_TAGS}", s, re.I)
     if m:
         num = m.group(2)
         if not (len(num) == 4 and 1900 <= int(num) <= 2099):
