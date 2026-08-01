@@ -88,8 +88,19 @@ Then:
 | [docs/configuration.md](docs/configuration.md) | Collection roots, and step-by-step API account setup |
 | [docs/install.md](docs/install.md) | Manual install on each platform |
 | [docs/how-it-works.md](docs/how-it-works.md) | How titles are discovered and enriched, plus the CLI |
-| [docs/sync.md](docs/sync.md) | One catalogue across several machines |
+| [docs/sync.md](docs/sync.md) | Sharing a catalogue between computers — a portable bundle, or a synced folder |
 | [docs/troubleshooting.md](docs/troubleshooting.md) | Missing covers, offline drives, providers that do nothing |
+
+**On another computer and missing the covers?** You do not need API keys there
+— export a bundle on the machine that has them and import it on the other:
+
+```bash
+python mediacat.py export-bundle      # then copy the .zip over
+python mediacat.py import-bundle media-catalog-bundle.zip
+```
+
+Covers and metadata travel inside it; credentials never do. See
+[docs/sync.md](docs/sync.md).
 
 Covers missing on a second machine is the common one, and
 [`scripts/diagnose_sync.py`](scripts/diagnose_sync.py) answers it with facts —
