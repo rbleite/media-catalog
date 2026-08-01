@@ -506,6 +506,48 @@ with st.sidebar.expander("💾 Correções (backup/restauro)", expanded=False):
         except Exception as e:
             st.error(str(e)[:200])
 
+# Portable bundle — the whole result of enrichment (metadata AND the cover
+# images) in one file. The receiving machine needs no API keys, no drive-xray
+# index and no cloud folder: the work was already paid for once.
+with st.sidebar.expander("📦 Levar capas e dados para outro PC", expanded=False):
+    st.caption("Empacota o que já foi enriquecido — capas incluídas — para "
+               "abrir noutro computador **sem precisar de contas nem chaves "
+               "de API**. As chaves nunca vão dentro do ficheiro.")
+    if st.button("📦 Criar pacote", use_container_width=True):
+        import tempfile as _tf
+        _dest = Path(_tf.gettempdir()) / "media-catalog-bundle.zip"
+        with st.spinner("A empacotar capas e metadados…"):
+            _res = C.export_bundle(conn, _dest)
+        st.session_state["_bundle"] = (_dest.read_bytes(), _res)
+    if "_bundle" in st.session_state:
+        _blob, _res = st.session_state["_bundle"]
+        st.download_button(
+            f"⬇️ Descarregar ({_res['works']} títulos · {_res['covers']} capas"
+            f" · {_res['bytes'] / 1048576:.1f} MB)",
+            data=_blob, file_name="media-catalog-bundle.zip",
+            mime="application/zip", use_container_width=True)
+
+    _bup = st.file_uploader("Aplicar um pacote de outro PC", type="zip",
+                            key="bundle_up")
+    if _bup is not None and st.button("📥 Aplicar pacote", use_container_width=True):
+        import tempfile as _tf2
+        _tmp = Path(_tf2.gettempdir()) / "incoming-bundle.zip"
+        _tmp.write_bytes(_bup.getvalue())
+        try:
+            with st.spinner("A aplicar…"):
+                res = C.import_bundle(conn, _tmp)
+            st.success(f"✓ {res['created']} novos · {res['updated']} atualizados "
+                       f"· {res['covers']} capas")
+            if res["skipped_manual"]:
+                st.info(f"ℹ️ {res['skipped_manual']} deixados como estão — "
+                        f"foram corrigidos à mão neste computador.")
+            st.cache_resource.clear()
+            st.rerun()
+        except Exception as e:
+            st.error(str(e)[:200])
+        finally:
+            _tmp.unlink(missing_ok=True)
+
 with st.sidebar.expander("🔄 Atualizações (GitHub)", expanded=False):
     import update as _upd
     _upd = importlib.reload(_upd)  # same staleness concern as the top imports

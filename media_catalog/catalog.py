@@ -257,3 +257,149 @@ def import_overrides(conn: sqlite3.Connection, data: dict) -> dict:
     conn.commit()
     return {"applied": applied, "missing": missing,
             "total": len(data.get("overrides", []))}
+
+
+# --- portable bundle ------------------------------------------------------
+# Enrichment costs API keys and time. Once a title has its cover and metadata,
+# no other machine should have to earn that again — especially not by setting
+# up TMDB and IGDB accounts of its own. A bundle is the whole result of
+# enrichment (metadata + the actual cover images) in one file you can copy on a
+# USB stick, with no cloud and no credentials involved.
+
+_BUNDLE_COLS = ["drive_label", "rel_path", "type", "title", "title_raw",
+                "artist", "year", "platform", "genre", "identifier", "provider",
+                "extra_json", "status", "hidden", "manual", "enriched",
+                "has_subtitles"]
+
+
+def export_bundle(conn: sqlite3.Connection, out_path: Path,
+                  covers_dir: Path | None = None, progress=None) -> dict:
+    """Write every enriched title plus its cover image to a portable .zip.
+
+    Deliberately excludes secrets.json: a bundle is meant to be copied around,
+    and API keys must not travel with it. The point is that the receiving
+    machine never needs keys at all.
+    """
+    import zipfile
+    covers_dir = Path(covers_dir or _config.COVERS_DIR)
+    rows = conn.execute(
+        f"SELECT {', '.join(_BUNDLE_COLS)}, cover_path FROM works"
+        " WHERE enriched=1 OR manual=1 OR status!='' OR cover_path IS NOT NULL"
+    ).fetchall()
+
+    items, seen_covers = [], set()
+    for r in rows:
+        item = dict(zip(_BUNDLE_COLS, r[:-1]))
+        cover = r[-1]
+        if cover:
+            # Store the file name only. Absolute paths are meaningless on the
+            # receiving machine, and resolve_cover() already looks up by name.
+            name = str(cover).replace("\\", "/").rsplit("/", 1)[-1]
+            src = covers_dir / name
+            if src.is_file() and src.stat().st_size > 0:
+                item["cover"] = name
+                seen_covers.add(name)
+        items.append(item)
+
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    total = len(items) + len(seen_covers)
+    done = 0
+    with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("manifest.json", json.dumps({
+            "version": 1,
+            "kind": "media-catalog-bundle",
+            "exported_at": datetime.datetime.now().isoformat(timespec="seconds"),
+            "works": len(items),
+            "covers": len(seen_covers),
+        }, indent=2, ensure_ascii=False))
+        z.writestr("works.json",
+                   json.dumps(items, ensure_ascii=False, indent=1))
+        done += len(items)
+        for name in sorted(seen_covers):
+            z.write(covers_dir / name, f"covers/{name}")
+            done += 1
+            if progress and done % 25 == 0:
+                progress(done, total)
+    if progress:
+        progress(total, total)
+    return {"works": len(items), "covers": len(seen_covers),
+            "path": str(out_path), "bytes": out_path.stat().st_size}
+
+
+def import_bundle(conn: sqlite3.Connection, zip_path: Path,
+                  covers_dir: Path | None = None, progress=None) -> dict:
+    """Apply a bundle onto this machine's catalog.
+
+    Titles already present are updated; titles this machine has never scanned
+    are *created*, so a bundle alone is enough to browse the collection on a
+    computer that has no drive-xray index and no API keys. Such rows carry no
+    size or mtime -- there is no file here to measure -- but they show the
+    drive each title lives on, which is the question being asked.
+
+    A local manual correction is never overwritten by an imported row.
+    """
+    import shutil
+    import zipfile
+    covers_dir = Path(covers_dir or _config.COVERS_DIR)
+    covers_dir.mkdir(parents=True, exist_ok=True)
+    now = datetime.datetime.now().isoformat(timespec="seconds")
+    updated = created = skipped_manual = covers = 0
+
+    with zipfile.ZipFile(zip_path) as z:
+        names = set(z.namelist())
+        if "works.json" not in names:
+            raise ValueError(f"{zip_path} is not a media-catalog bundle")
+        items = json.loads(z.read("works.json").decode("utf-8"))
+
+        for name in names:
+            if not name.startswith("covers/") or name.endswith("/"):
+                continue
+            # basename only: never let an archive path escape covers_dir
+            base = name.split("/")[-1]
+            if not base or base in (".", ".."):
+                continue
+            dest = covers_dir / base
+            if dest.exists() and dest.stat().st_size > 0:
+                continue
+            with z.open(name) as src, dest.open("wb") as out:
+                shutil.copyfileobj(src, out)
+            covers += 1
+
+        total = len(items)
+        for i, o in enumerate(items):
+            row = conn.execute(
+                "SELECT id, COALESCE(manual,0) FROM works"
+                " WHERE drive_label=? AND rel_path=?",
+                (o.get("drive_label"), o.get("rel_path"))).fetchone()
+            cover_path = str(covers_dir / o["cover"]) if o.get("cover") else None
+            if row and row[1] and not o.get("manual"):
+                skipped_manual += 1          # a correction made here wins
+                continue
+            fields = [c for c in _BUNDLE_COLS
+                      if c not in ("drive_label", "rel_path")]
+            if row:
+                sets = [f"{c}=?" for c in fields] + ["updated_at=?"]
+                vals = [o.get(c) for c in fields] + [now]
+                if cover_path:
+                    sets.append("cover_path=?"); vals.append(cover_path)
+                vals.append(row[0])
+                conn.execute(f"UPDATE works SET {', '.join(sets)} WHERE id=?", vals)
+                updated += 1
+            else:
+                cols = ["drive_label", "rel_path"] + fields + ["updated_at"]
+                vals = [o.get("drive_label"), o.get("rel_path")] \
+                    + [o.get(c) for c in fields] + [now]
+                if cover_path:
+                    cols.append("cover_path"); vals.append(cover_path)
+                conn.execute(
+                    f"INSERT INTO works ({', '.join(cols)})"
+                    f" VALUES ({', '.join('?' * len(cols))})", vals)
+                created += 1
+            if progress and i % 50 == 0:
+                progress(i + 1, total)
+    conn.commit()
+    if progress:
+        progress(len(items), len(items))
+    return {"updated": updated, "created": created, "covers": covers,
+            "skipped_manual": skipped_manual, "total": len(items)}

@@ -133,6 +133,27 @@ def cmd_import_patch(args) -> None:
           f" ({res['missing']} not in catalog)", file=sys.stderr)
 
 
+def cmd_export_bundle(args) -> None:
+    conn = C.open_catalog(Path(args.catalog))
+    res = C.export_bundle(conn, Path(args.out))
+    mb = res["bytes"] / 1048576
+    print(f"exported {res['works']} titles + {res['covers']} covers "
+          f"-> {res['path']}  ({mb:.1f} MB)", file=sys.stderr)
+    print("  copy it to another machine and run: "
+          "python mediacat.py import-bundle <file>", file=sys.stderr)
+
+
+def cmd_import_bundle(args) -> None:
+    conn = C.open_catalog(Path(args.catalog))
+    res = C.import_bundle(conn, Path(args.file))
+    print(f"imported {res['created']} new + {res['updated']} updated titles, "
+          f"{res['covers']} covers ({res['total']} in the bundle)",
+          file=sys.stderr)
+    if res["skipped_manual"]:
+        print(f"  {res['skipped_manual']} left alone — corrected by hand here",
+              file=sys.stderr)
+
+
 def _print_summary(conn) -> None:
     by_type = C.counts_by_type(conn)
     print("\n  by type:")
@@ -176,6 +197,15 @@ def main() -> None:
     pm = sub.add_parser("import-patch", help="re-apply a JSON patch of overrides")
     pm.add_argument("file", help="patch file from export-patch")
 
+    pb = sub.add_parser("export-bundle",
+                        help="pack covers + metadata into a portable .zip")
+    pb.add_argument("out", nargs="?", default="media-catalog-bundle.zip",
+                    help="output .zip (default: media-catalog-bundle.zip)")
+
+    pib = sub.add_parser("import-bundle",
+                         help="apply a bundle — no API keys needed")
+    pib.add_argument("file", help="bundle .zip from export-bundle")
+
     args = p.parse_args()
     # first run with a shared/synced data dir: migrate legacy catalog+covers
     from media_catalog import config as _config
@@ -184,7 +214,8 @@ def main() -> None:
         print(f"  {msg}", file=sys.stderr)
     {"scan": cmd_scan, "summary": cmd_summary, "id3": cmd_id3, "tags": cmd_tags,
      "nfo": cmd_nfo, "export-patch": cmd_export_patch,
-     "import-patch": cmd_import_patch}[args.cmd](args)
+     "import-patch": cmd_import_patch, "export-bundle": cmd_export_bundle,
+     "import-bundle": cmd_import_bundle}[args.cmd](args)
 
 
 if __name__ == "__main__":
