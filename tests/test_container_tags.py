@@ -294,3 +294,56 @@ def test_a_kind_mismatch_is_reported_not_applied(tmp_path, tmp_path_factory):
     stats = enrich_container(conn, {"D": str(root)})
     assert stats["kind_mismatch"] == 1
     assert conn.execute("SELECT type FROM works").fetchone()[0] == "series"
+
+
+# ------------------------------------------------------------- CLI wiring
+
+def test_cli_tags_subcommand_reaches_the_enricher(tmp_path, tagged_mp4, monkeypatch):
+    """The reader and the pass are useless if nothing invokes them: this drives
+    the real `mediacat.py tags` entry point end to end."""
+    import importlib.util
+    import json
+    import sys
+
+    from media_catalog import catalog
+
+    root = tmp_path / "drive"
+    (root / "Movies").mkdir(parents=True)
+    (root / "Movies" / "film.mp4").write_bytes(tagged_mp4.read_bytes())
+
+    db = tmp_path / "catalog.db"
+    conn = catalog.open_catalog(db)
+    catalog.upsert_work(conn, {"type": "movie", "title": "", "title_raw": "x",
+                               "rel_path": "Movies/film.mp4", "drive_label": "D"})
+    conn.commit()
+    conn.close()
+
+    spec = importlib.util.spec_from_file_location(
+        "mediacat_cli", Path(__file__).resolve().parent.parent / "mediacat.py")
+    cli = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cli)
+
+    # only the mounted-drive lookup is faked; everything below it is real
+    monkeypatch.setattr(cli.D, "drive_roots", lambda: {"D": str(root)})
+    monkeypatch.setattr(sys, "argv", ["mediacat", "--catalog", str(db), "tags"])
+    cli.main()
+
+    conn = catalog.open_catalog(db)
+    title = conn.execute("SELECT title FROM works").fetchone()[0]
+    assert title == "O Sopro do Norte", "the CLI did not reach the tag reader"
+
+
+def test_cli_registers_tags_alongside_the_other_passes():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "mediacat_cli2", Path(__file__).resolve().parent.parent / "mediacat.py")
+    cli = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cli)
+    import contextlib
+    import io
+    import sys
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf), contextlib.suppress(SystemExit):
+        sys.argv = ["mediacat", "--help"]
+        cli.main()
+    assert "tags" in buf.getvalue()

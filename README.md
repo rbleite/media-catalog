@@ -94,6 +94,11 @@ library.
      `node_modules` and game internals never masquerade as titles.
    - Windows backslash paths are normalised, and `._` AppleDouble junk is skipped.
 2. **Enrich** — `enrich/` clients add covers + metadata, caching every response.
+   Two passes read the real files instead of the network, and only for drives
+   mounted right now: `id3` (album artist/year/genre + embedded cover) and
+   `container` (series/season/episode/year from inside MP4 and MKV files, which
+   states what the file name only implies). Both are in the sidebar, and are
+   `mediacat.py id3` / `mediacat.py tags` on the command line.
 3. **Browse** — `app.py` (Streamlit) shows the filterable cover gallery.
 
 ## Usage
@@ -102,6 +107,7 @@ library.
 python mediacat.py scan            # scan every drive-xray-registered drive
 python mediacat.py scan a.db b.db  # or specific drive-xray db files
 python mediacat.py summary         # counts by type / platform
+python mediacat.py tags            # read tags from inside mounted video files
 streamlit run app.py --server.port 8503   # the gallery
 ```
 
