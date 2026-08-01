@@ -357,6 +357,41 @@ if st.sidebar.button(
 if not _id3_roots:
     st.sidebar.caption("🎵 ID3: nenhuma drive montada agora.")
 
+# Container tags — show/season/episode read from inside the video files
+# themselves. Reuses _id3_roots: that is just the set of drives mounted right
+# now, shared by every pass that touches real files.
+_tag_force = st.sidebar.checkbox("↻ Sobrescrever tudo (tags de vídeo)",
+                                 value=False,
+                                 help="Por defeito só preenche campos vazios.")
+if st.sidebar.button(
+        "🎞️ Ler tags dos vídeos (drives montadas)",
+        disabled=not _id3_roots,
+        help=("Lê a série / temporada / episódio e o ano de dentro dos próprios "
+              "ficheiros MP4/MKV, em vez de os adivinhar pelo nome. A maioria "
+              "das releases não traz tags nenhumas — essas ficam como estão. "
+              "Só nas drives ligadas: "
+              + (", ".join(_id3_roots) or "nenhuma montada"))):
+    from media_catalog.enrich import container as _cont
+    prog = st.sidebar.progress(0.0, text="A ler tags dos vídeos…")
+    def _cbct(i, n, u, tg):
+        prog.progress(i / max(n, 1),
+                      text=f"{i}/{n} · {u} atualizados · {tg} com tags")
+    res = _cont.enrich_container(conn, _id3_roots, force=_tag_force,
+                                 progress=_cbct)
+    st.sidebar.success(f"✓ {res['updated']} atualizados · {res['tagged']} com "
+                       f"tags · {res['no_tags']} sem tags "
+                       f"({res['skipped_offline']} offline)")
+    if res["kind_mismatch"]:
+        # Deliberately not applied: moving a work between galleries is the
+        # user's decision, so it is reported and left alone.
+        st.sidebar.info(f"ℹ️ {res['kind_mismatch']} obra(s) têm uma tag que "
+                        f"discorda da classificação (filme vs série). Nada foi "
+                        f"movido — corrige à mão se concordares.")
+    st.cache_resource.clear()
+    st.rerun()
+if not _id3_roots:
+    st.sidebar.caption("🎞️ Tags de vídeo: nenhuma drive montada agora.")
+
 # NFO sidecars — exact IMDb match for movies whose drive is mounted
 if config.has_tmdb():
     _nfo_force = st.sidebar.checkbox("↻ Re-igualar corrigidos (NFO)", value=False,

@@ -81,6 +81,26 @@ def cmd_id3(args) -> None:
           file=sys.stderr)
 
 
+def cmd_tags(args) -> None:
+    from media_catalog.enrich import container
+    roots = D.drive_roots()
+    if not roots:
+        sys.exit("no drive-xray drives mounted right now — plug one in and retry")
+    print("mounted drives: " + ", ".join(f"{k} ({v})" for k, v in roots.items()),
+          file=sys.stderr)
+    conn = C.open_catalog(Path(args.catalog))
+    res = container.enrich_container(conn, roots, force=args.force)
+    print(f"\ntags: {res['updated']} works updated · {res['tagged']} files "
+          f"carried tags · {res['no_tags']} had none · "
+          f"{res['skipped_offline']} offline / {res['total']} total",
+          file=sys.stderr)
+    if res["kind_mismatch"]:
+        # Never applied automatically: moving a work between galleries is the
+        # user's call, so it is surfaced and left alone.
+        print(f"  note: {res['kind_mismatch']} work(s) carry a tag disagreeing "
+              f"with how they were classified (movie vs series)", file=sys.stderr)
+
+
 def cmd_nfo(args) -> None:
     from media_catalog import config
     from media_catalog.enrich import nfo
@@ -141,6 +161,10 @@ def main() -> None:
     pi.add_argument("--force", action="store_true",
                     help="overwrite artist/album/year/genre even when already set")
 
+    pt = sub.add_parser("tags", help="read embedded tags off mounted video drives")
+    pt.add_argument("--force", action="store_true",
+                    help="overwrite title/year even when already set")
+
     pn = sub.add_parser("nfo", help="match movies via IMDb id in .nfo sidecars")
     pn.add_argument("--force", action="store_true",
                     help="also re-match movies already corrected by hand (manual=1)")
@@ -158,8 +182,9 @@ def main() -> None:
     msg = _config.ensure_data_dir()
     if msg:
         print(f"  {msg}", file=sys.stderr)
-    {"scan": cmd_scan, "summary": cmd_summary, "id3": cmd_id3, "nfo": cmd_nfo,
-     "export-patch": cmd_export_patch, "import-patch": cmd_import_patch}[args.cmd](args)
+    {"scan": cmd_scan, "summary": cmd_summary, "id3": cmd_id3, "tags": cmd_tags,
+     "nfo": cmd_nfo, "export-patch": cmd_export_patch,
+     "import-patch": cmd_import_patch}[args.cmd](args)
 
 
 if __name__ == "__main__":
