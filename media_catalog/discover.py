@@ -509,6 +509,13 @@ def scan_index(db_path: Path, label: str,
         base = _basename(rel)
         if _is_junk(base):
             continue
+        # What a file IS beats what it is called: a .jpg is never an episode,
+        # whatever its name looks like. The movie pass has always required a
+        # video extension; this one did not, which is how 'photo 4x6 print.jpg'
+        # could reach the parser at all. Directories are exempt — a show or
+        # season node is a folder ('Breaking Bad/Season 1') with no extension.
+        if not is_dir and _ext(base) not in VIDEO_EXT:
+            continue
         parsed = parse_tv(base, strong=not _under_series_root(rel))
         if parsed and len(parsed[0]) >= 3:
             tv_node[rel] = parsed

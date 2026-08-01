@@ -44,6 +44,11 @@ FILES = [
     ("Series/Breaking Bad/Breaking.Bad.S01E01.720p.HDTV-FQM.mkv", 0),
     # the NxNN convention must reach the catalogue too
     ("Series/Os Maias", 1), ("Series/Os Maias/Os.Maias.2x05.mkv", 0),
+    # non-video files inside a Series/ root whose names have an episode-ish
+    # shape: a photo is never an episode, whatever it is called
+    ("Series/photo 4x6 print.jpg", 0),
+    ("Series/scan 1x01 preview.png", 0),
+    ("Series/notes S01E01.txt", 0),
 ]
 
 
@@ -76,3 +81,12 @@ def test_finds_each_kind_of_work(v7_index):
     assert "The Wall" in titles          # album, under a music root
     assert "Breaking Bad" in titles      # series, SxxEyy
     assert "Os Maias" in titles          # series, NxNN
+
+
+def test_non_video_files_are_never_episodes(v7_index):
+    """The catalogue is built from names, so the file's own kind has to be the
+    first filter — otherwise a photo named like an episode becomes a show."""
+    works = list(scan_index(v7_index, "TestDrive"))
+    titles = {w["title"] for w in works}
+    for bogus in ("Photo", "Scan", "Notes"):
+        assert bogus not in titles, f"{bogus!r} came from a non-video file"
