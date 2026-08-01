@@ -505,6 +505,7 @@ def scan_index(db_path: Path, label: str,
     # everywhere else only the strong SxxEyy / "Season N" signal is, so scientific
     # names (63X magnifications, sample ids) are never mistaken for TV.
     tv_node: dict[str, tuple[str, int, int | None]] = {}   # rel -> (show,season,ep)
+    tv_dirs: set[str] = set()          # which of those nodes are folders
     for rel, is_dir, size, mtime in rows:
         base = _basename(rel)
         if _is_junk(base):
@@ -519,6 +520,8 @@ def scan_index(db_path: Path, label: str,
         parsed = parse_tv(base, strong=not _under_series_root(rel))
         if parsed and len(parsed[0]) >= 3:
             tv_node[rel] = parsed
+            if is_dir:
+                tv_dirs.add(rel)
 
     if tv_node:
         series_shows: dict[str, dict] = {}    # norm(show) -> work
@@ -552,17 +555,30 @@ def scan_index(db_path: Path, label: str,
                         w["mtime"] = mtime or 0.0
                     break
         # Record which seasons/episodes are present, from every TV node.
-        for show, season, episode in tv_node.values():
-            if _norm_show(show):
-                w = _show_work(show)
-                w["_seasons"].add(season)
-                if episode is not None:
-                    w["_eps"].add((season, episode))
+        for rel, (show, season, episode) in tv_node.items():
+            if not _norm_show(show):
+                continue
+            w = _show_work(show)
+            w["_seasons"].add(season)
+            if episode is not None:
+                w["_eps"].add((season, episode))
+            # Keep one real episode path. A series work's rel_path is a synthetic
+            # key ('series/<slug>'), so without this there is no file on disk to
+            # go back to — which the container-tag enrichment needs to read the
+            # embedded season/episode. Prefer a node with an episode number: a
+            # season folder tells the tags nothing.
+            if rel not in tv_dirs:
+                w.setdefault("_sample_ep" if episode is not None
+                             else "_sample_any", rel)
         for skey, w in series_shows.items():
             seasons = sorted(w.pop("_seasons"))
             eps = w.pop("_eps")
-            w["extra_json"] = json.dumps(
-                {"have_seasons": seasons, "have_episodes": len(eps)})
+            sample = w.pop("_sample_ep", None) or w.pop("_sample_any", None)
+            w.pop("_sample_ep", None); w.pop("_sample_any", None)
+            payload = {"have_seasons": seasons, "have_episodes": len(eps)}
+            if sample:
+                payload["sample_path"] = sample
+            w["extra_json"] = json.dumps(payload)
             yield w
 
 
