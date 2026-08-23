@@ -186,3 +186,112 @@ def test_a_real_command_writes_locally_and_publishes(tmp_path, monkeypatch):
     assert stage.is_dir(), "the write never went through staging"
     assert not (stage / "catalog.db").exists(), \
         "and nothing may be stranded there afterwards"
+
+
+# ── publishing must not break a connection someone else holds ────────────────
+#
+# Reported from the running app: after `mediacat covers-migrate`, every
+# enrichment died with "attempt to write a readonly database".
+#
+# finalize() used shutil.move, which replaces the directory entry and gives
+# the destination a NEW inode. The Streamlit gallery holds one connection open
+# for the life of the session, cached in st.cache_resource, so it was left
+# pointing at the old unlinked file — and never recovered, because nothing
+# ever rebuilds that cache. The app stayed broken until restarted.
+#
+# It happened on the very first command this staging ever ran.
+
+def _open_catalog(path):
+    from media_catalog import catalog as C
+    return C.open_catalog(path)
+
+
+def test_publishing_leaves_an_open_connection_usable(cloud):
+    """The exact failure, as a test. A reader that was already attached must
+    still be able to write afterwards."""
+    root, stage = cloud
+    db = root / "catalog.db"
+    _open_catalog(db).close()
+
+    held = _open_catalog(db)                    # the gallery's cached handle
+    held.execute("SELECT COUNT(*) FROM works").fetchone()
+
+    staged = stage / "catalog.db"
+    stage.mkdir(parents=True, exist_ok=True)
+    __import__("shutil").copy2(db, staged)
+    staging.finalize(staged, db)
+
+    held.execute("INSERT OR REPLACE INTO meta (k, v) VALUES ('probe', '1')")
+    held.commit()                               # raised OperationalError before
+
+
+def test_the_held_connection_sees_what_was_published(cloud):
+    """Preserving the file is not enough — the new rows have to be visible
+    through the connection that was already open, or the app shows stale data
+    and looks broken in a different way."""
+    import shutil as _sh
+    import sqlite3 as _sq
+
+    root, stage = cloud
+    db = root / "catalog.db"
+    _open_catalog(db).close()
+    held = _open_catalog(db)
+
+    stage.mkdir(parents=True, exist_ok=True)
+    staged = stage / "catalog.db"
+    _sh.copy2(db, staged)
+    w = _sq.connect(staged)
+    w.execute("INSERT INTO works (id, type, title, rel_path, drive_label,"
+              " updated_at) VALUES (99, 'game', 'Novo', '/x', 'D', '')")
+    w.commit()
+    w.close()
+
+    staging.finalize(staged, db)
+    assert held.execute("SELECT COUNT(*) FROM works WHERE id=99").fetchone()[0] == 1
+
+
+def test_the_destination_keeps_its_identity(cloud):
+    """The mechanism behind both of the above, stated directly: the inode must
+    not change. A move gives a new one, which is what stranded the app."""
+    import shutil as _sh
+
+    root, stage = cloud
+    db = root / "catalog.db"
+    _open_catalog(db).close()
+    before = db.stat().st_ino
+
+    stage.mkdir(parents=True, exist_ok=True)
+    staged = stage / "catalog.db"
+    _sh.copy2(db, staged)
+    staging.finalize(staged, db)
+
+    assert db.stat().st_ino == before, "publishing replaced the file"
+
+
+def test_a_first_run_with_no_destination_still_works(cloud):
+    """Nothing can be holding a file that does not exist yet, so that path
+    stays a plain move — and must keep working."""
+    root, stage = cloud
+    db = root / "catalog.db"
+    stage.mkdir(parents=True, exist_ok=True)
+    staged = stage / "catalog.db"
+    _open_catalog(staged).close()
+
+    staging.finalize(staged, db)
+    assert db.exists() and not staged.exists()
+
+
+def test_an_unreadable_destination_is_replaced_rather_than_refused(cloud):
+    """A truncated sync leaves a file that is not a database. Refusing to
+    publish over rubble would strand the finished catalogue in staging."""
+    root, stage = cloud
+    db = root / "catalog.db"
+    db.write_bytes(b"not a database at all" * 30)
+
+    stage.mkdir(parents=True, exist_ok=True)
+    staged = stage / "catalog.db"
+    _open_catalog(staged).close()
+
+    staging.finalize(staged, db)
+    assert _open_catalog(db).execute(
+        "SELECT COUNT(*) FROM works").fetchone()[0] == 0

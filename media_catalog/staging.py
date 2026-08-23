@@ -107,24 +107,79 @@ def stage_for_write(db: Path) -> tuple[Path, bool]:
 
 
 def finalize(staged: Path, db: Path) -> str:
-    """Move the finished copy back — one upload instead of thousands.
+    """Publish the finished copy — one upload instead of thousands.
+
+    When the destination already exists this goes THROUGH SQLite rather than
+    moving the file, and that distinction is the whole point.
+
+    `shutil.move` replaces the directory entry, so the destination gets a new
+    inode. Any connection another process is holding — the Streamlit gallery
+    keeps one open for the life of the session, cached — is left pointing at
+    the old, now-unlinked file, and SQLite starts answering every write with
+    "attempt to write a readonly database". It never recovers, because the
+    connection is cached: the app stays broken until it is restarted. That is
+    exactly what happened, on the first command this staging ever ran.
+
+    Connection.backup() copies page by page into the existing file, so the
+    destination keeps its identity and SQLite's own locking decides when it is
+    safe. A reader mid-query blocks instead of being torn out from under; a
+    writer holding the file makes this fail loudly rather than silently
+    poisoning it.
 
     Retried: sync clients briefly lock files while scanning them, and losing
-    the move would strand the only up-to-date catalogue in the staging dir.
+    this would strand the only up-to-date catalogue in the staging dir.
     """
     _checkpoint(staged)
     _drop_sidecars(staged)
-    last = ""
-    for attempt in range(5):
+    db.parent.mkdir(parents=True, exist_ok=True)
+
+    if not db.exists():
+        # nothing can be holding it open — a plain move is cheaper and there
+        # is no inode to preserve
         try:
-            _drop_sidecars(db)
-            db.parent.mkdir(parents=True, exist_ok=True)
             shutil.move(str(staged), str(db))
             return f"moved to {db}"
         except OSError as e:
+            return f"could not publish ({e}) — catalogue kept at {staged}"
+
+    last = ""
+    for attempt in range(5):
+        src = dst = None
+        try:
+            src = sqlite3.connect(staged)
+            dst = sqlite3.connect(db)
+            dst.execute("PRAGMA busy_timeout=30000")
+            src.backup(dst)
+            dst.commit()
+            return f"published into {db}"
+        except sqlite3.DatabaseError as e:
+            # The destination is not a readable database — a truncated sync, a
+            # failed download. There is no identity worth preserving in that,
+            # and refusing would strand the finished catalogue in staging over
+            # a file that is rubble.
+            if "not a database" in str(e).lower() or "malformed" in str(e).lower():
+                try:
+                    _drop_sidecars(db)
+                    shutil.move(str(staged), str(db))
+                    return f"replaced an unreadable {db.name}"
+                except OSError as move_err:
+                    return f"could not publish ({move_err}) — kept at {staged}"
             last = str(e)
             time.sleep(2 * (attempt + 1))
-    return f"could not move back ({last}) — catalogue kept at {staged}"
+        except sqlite3.Error as e:
+            last = str(e)
+            time.sleep(2 * (attempt + 1))
+        finally:
+            for c in (src, dst):
+                if c is not None:
+                    try:
+                        c.close()
+                    except sqlite3.Error:
+                        pass
+    # Deliberately no move fallback here: reaching this means the destination
+    # is a real database that is locked or busy — something else is using it
+    # right now, which is exactly the case a move would damage.
+    return f"could not publish ({last}) — catalogue kept at {staged}"
 
 
 @contextlib.contextmanager
