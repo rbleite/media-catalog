@@ -236,11 +236,28 @@ def main() -> None:
     msg = _config.ensure_data_dir()
     if msg:
         print(f"  {msg}", file=sys.stderr)
-    {"scan": cmd_scan, "summary": cmd_summary, "id3": cmd_id3, "tags": cmd_tags,
-     "nfo": cmd_nfo, "export-patch": cmd_export_patch,
-     "import-patch": cmd_import_patch, "export-bundle": cmd_export_bundle,
-     "import-bundle": cmd_import_bundle,
-     "covers-migrate": cmd_covers_migrate}[args.cmd](args)
+    handlers = {
+        "scan": cmd_scan, "summary": cmd_summary, "id3": cmd_id3,
+        "tags": cmd_tags, "nfo": cmd_nfo, "export-patch": cmd_export_patch,
+        "import-patch": cmd_import_patch, "export-bundle": cmd_export_bundle,
+        "import-bundle": cmd_import_bundle,
+        "covers-migrate": cmd_covers_migrate,
+    }
+
+    # Long writes go to a local copy first when the catalogue lives in a synced
+    # folder, and the finished file is moved back at the end -- one upload
+    # instead of minutes of churn. Done here rather than in each command so a
+    # command added later cannot be the one that forgets; the read-only ones
+    # are listed explicitly because copying the file to read it would be pure
+    # waste.
+    from media_catalog import staging as _staging
+    READERS = {"summary", "export-patch", "export-bundle"}
+    if args.cmd in READERS:
+        handlers[args.cmd](args)
+    else:
+        with _staging.staged_catalog(Path(args.catalog)) as _target:
+            args.catalog = str(_target)
+            handlers[args.cmd](args)
 
 
 if __name__ == "__main__":
