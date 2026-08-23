@@ -157,10 +157,18 @@ def test_a_real_command_writes_locally_and_publishes(tmp_path, monkeypatch):
     root.mkdir(parents=True)
     db = root / "catalog.db"
 
-    env = dict(**{k: v for k, v in __import__("os").environ.items()})
-    env["HOME"] = str(tmp_path / "home")
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    env = dict(__import__("os").environ)
     env["MEDIACAT_DATA_DIR"] = str(root)
-    (tmp_path / "home").mkdir()
+    # Path.home() reads HOME on POSIX and USERPROFILE on Windows. Setting only
+    # HOME leaves the Windows run staging into the real user profile, where
+    # this test then looks in the wrong place and reports that staging never
+    # happened -- which is exactly how it failed in CI.
+    env["HOME"] = str(fake_home)
+    env["USERPROFILE"] = str(fake_home)
+    env.pop("HOMEDRIVE", None)
+    env.pop("HOMEPATH", None)
 
     out = subprocess.run(
         [sys.executable, str(REPO / "mediacat.py"),
