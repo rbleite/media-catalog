@@ -14,6 +14,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from media_catalog import covers
 from media_catalog import config
 
 # Winamp / ID3v1 numeric genre table (0–147). TCON frames reference these by
@@ -214,13 +215,9 @@ def extract_cover(path: Path, work_id: int, head_bytes: int = 1 << 21) -> str | 
         di = raw.find(term, i)
         i = (di + len(term)) if di != -1 else i
         data = raw[i:]
-        if len(data) < 500:
-            return None
-        ext = "png" if "png" in mime else "jpg"
-        config.COVERS_DIR.mkdir(parents=True, exist_ok=True)
-        dest = config.COVERS_DIR / f"album_{work_id}.{ext}"
-        dest.write_bytes(data)
-        return str(dest)
+        # the extension is derived from the bytes inside covers.store(), not
+        # from the declared MIME type, which tags routinely get wrong
+        return covers.store(data)
     except Exception:
         return None
 

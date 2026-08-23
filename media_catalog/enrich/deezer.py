@@ -10,6 +10,7 @@ import time
 import urllib.parse
 import urllib.request
 
+from media_catalog import covers
 from media_catalog import config
 from media_catalog.enrich.itunes import clean_album, _norm
 
@@ -77,7 +78,7 @@ def search_candidates(artist: str, album: str) -> list:
 def apply_candidate(conn, work_id: int, best: dict) -> None:
     import datetime
     art = best.get("cover_xl") or best.get("cover_big")
-    cover = _download_cover(art, work_id) if art else None
+    cover = _download_cover(conn, art) if art else None
     now = datetime.datetime.now().isoformat(timespec="seconds")
     conn.execute(
         "UPDATE works SET title=?, artist=?, cover_path=COALESCE(?, cover_path),"
@@ -87,19 +88,17 @@ def apply_candidate(conn, work_id: int, best: dict) -> None:
     conn.commit()
 
 
-def _download_cover(url: str, work_id: int) -> str | None:
-    config.COVERS_DIR.mkdir(parents=True, exist_ok=True)
-    dest = config.COVERS_DIR / f"album_{work_id}.jpg"
-    try:
-        req = urllib.request.Request(url, headers={"User-Agent": _UA})
-        with urllib.request.urlopen(req, timeout=30) as r:
-            data = r.read()
-        if len(data) < 500:
+
+def _download_cover(conn, url: str) -> str | None:
+    def _get():
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": _UA})
+            with urllib.request.urlopen(req, timeout=30) as r:
+                return r.read()
+        except Exception:
             return None
-        dest.write_bytes(data)
-        return str(dest)
-    except Exception:
-        return None
+
+    return covers.store_from_source(conn, f"deezer:{url}", _get)
 
 
 def enrich_genres(conn, sleep: float = 0.12, progress=None) -> dict:
@@ -156,7 +155,7 @@ def enrich_albums(conn, limit: int | None = None, sleep: float = 0.15,
             continue
         r = search_album(conn, artist, album)
         art = (r.get("cover_xl") or r.get("cover_big")) if r else None
-        cover = _download_cover(art, wid) if art else None
+        cover = _download_cover(conn, art) if art else None
         if cover:
             conn.execute(
                 "UPDATE works SET cover_path=?, provider='deezer',"

@@ -30,6 +30,7 @@ for _m in (media_catalog.config, media_catalog.catalog):
         _m._loaded_mtime = _mt
 
 from media_catalog import catalog as C
+from media_catalog import covers
 from media_catalog import config
 
 st.set_page_config(page_title="Media Catalog", page_icon="🎬", layout="wide")
@@ -730,14 +731,14 @@ def _sibling_ids(wid, typ, title, ident):
 
 def _manual_cover_from_url(wid, typ, url):
     import urllib.request
-    dest = config.COVERS_DIR / f"{typ}_{wid}.jpg"
-    config.COVERS_DIR.mkdir(parents=True, exist_ok=True)
     req = urllib.request.Request(url, headers={"User-Agent": "media-catalog/0.1"})
     with urllib.request.urlopen(req, timeout=30) as r:
         data = r.read()
-    dest.write_bytes(data)
+    name = covers.store(data)
+    if not name:
+        raise ValueError("that URL did not return an image")
     conn.execute("UPDATE works SET cover_path=?, manual=1, updated_at=datetime('now')"
-                 " WHERE id=?", (str(dest), wid))
+                 " WHERE id=?", (name, wid))
     conn.commit()
 
 
