@@ -13,6 +13,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
+from media_catalog import covers
 from media_catalog import config
 
 _API = "https://api.themoviedb.org/3"
@@ -136,7 +137,7 @@ def apply_candidate(conn: sqlite3.Connection, work_id: int, best: dict,
                     api_key: str) -> None:
     """Apply a user-picked TMDB result to a work (download cover, mark manual)."""
     poster = best.get("poster_path")
-    cover = _download_cover(poster, work_id) if poster else None
+    cover = _download_cover(conn, poster) if poster else None
     genres = _genres(api_key)
     gnames = ", ".join(genres.get(g, "") for g in (best.get("genre_ids") or [])).strip(", ")
     rel = best.get("release_date") or ""
@@ -199,16 +200,21 @@ def _tv_acceptable(best: dict, title: str) -> bool:
     return i >= 5
 
 
-def _download_cover_tv(poster_path: str, work_id: int) -> str | None:
-    config.COVERS_DIR.mkdir(parents=True, exist_ok=True)
-    dest = config.COVERS_DIR / f"series_{work_id}.jpg"
-    try:
-        req = urllib.request.Request(config.TMDB_IMG + poster_path, headers=_UA)
-        with urllib.request.urlopen(req, timeout=30) as r:
-            dest.write_bytes(r.read())
-        return str(dest)
-    except Exception:
-        return None
+
+def _download_cover_tv(conn, poster_path: str) -> str | None:
+    """This never checked what it had downloaded — a 404 body was written out
+    as a .jpg and rendered as a broken image. covers.store() reads the magic
+    number and refuses anything that is not an image."""
+    def _get():
+        try:
+            req = urllib.request.Request(config.TMDB_IMG + poster_path,
+                                         headers=_UA)
+            with urllib.request.urlopen(req, timeout=30) as r:
+                return r.read()
+        except Exception:
+            return None
+
+    return covers.store_from_source(conn, f"tmdb:{poster_path}", _get)
 
 
 def _tv_payload(best: dict, have_json: str | None) -> str:
@@ -233,7 +239,7 @@ def apply_candidate_tv(conn: sqlite3.Connection, work_id: int, best: dict,
                        api_key: str) -> None:
     """Apply a user-picked TMDB TV result to a series work (manual pin)."""
     poster = best.get("poster_path")
-    cover = _download_cover_tv(poster, work_id) if poster else None
+    cover = _download_cover_tv(conn, poster) if poster else None
     gnames = ", ".join(_genres_tv(api_key).get(g, "")
                        for g in (best.get("genre_ids") or [])).strip(", ")
     fad = best.get("first_air_date") or ""
@@ -266,7 +272,7 @@ def enrich_series(conn: sqlite3.Connection, api_key: str,
         best = search_tv(conn, title, api_key)
         if best and best.get("id") and _tv_acceptable(best, title):
             poster = best.get("poster_path")
-            cover = _download_cover_tv(poster, wid) if poster else None
+            cover = _download_cover_tv(conn, poster) if poster else None
             gnames = ", ".join(genres.get(g, "")
                                for g in (best.get("genre_ids") or [])).strip(", ")
             fad = best.get("first_air_date") or ""
@@ -295,18 +301,18 @@ def enrich_series(conn: sqlite3.Connection, api_key: str,
     return {"matched": matched, "missed": missed, "total": len(rows)}
 
 
-def _download_cover(poster_path: str, work_id: int) -> str | None:
-    config.COVERS_DIR.mkdir(parents=True, exist_ok=True)
-    dest = config.COVERS_DIR / f"movie_{work_id}.jpg"
-    if dest.exists():
-        return str(dest)
-    try:
-        req = urllib.request.Request(config.TMDB_IMG + poster_path, headers=_UA)
-        with urllib.request.urlopen(req, timeout=30) as r:
-            dest.write_bytes(r.read())
-        return str(dest)
-    except Exception:
-        return None
+
+def _download_cover(conn, poster_path: str) -> str | None:
+    def _get():
+        try:
+            req = urllib.request.Request(config.TMDB_IMG + poster_path,
+                                         headers=_UA)
+            with urllib.request.urlopen(req, timeout=30) as r:
+                return r.read()
+        except Exception:
+            return None
+
+    return covers.store_from_source(conn, f"tmdb:{poster_path}", _get)
 
 
 def enrich_movies(conn: sqlite3.Connection, api_key: str,
@@ -325,7 +331,7 @@ def enrich_movies(conn: sqlite3.Connection, api_key: str,
         best = search_movie(conn, title, year, api_key)
         if best and best.get("id") and _acceptable(best, title, year):
             poster = best.get("poster_path")
-            cover = _download_cover(poster, wid) if poster else None
+            cover = _download_cover(conn, poster) if poster else None
             gnames = ", ".join(
                 genres.get(g, "") for g in (best.get("genre_ids") or [])
             ).strip(", ")

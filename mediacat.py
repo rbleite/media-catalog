@@ -167,6 +167,26 @@ def _print_summary(conn) -> None:
             print(f"    {str(plat):<10} {n:>5}   {gb:8.1f} GB")
 
 
+def cmd_covers_migrate(args) -> None:
+    """Fold the existing `<type>_<id>.jpg` covers into the content store.
+
+    Run once per catalogue. Copies rather than moves, and is idempotent, so an
+    interrupted run can simply be run again.
+    """
+    from media_catalog import covers
+    conn = C.open_catalog(Path(args.catalog))
+    stats = covers.migrate_legacy(conn)
+    conn.close()
+    print(f"  scanned      : {stats['scanned']}")
+    print(f"  stored       : {stats['stored']}")
+    print(f"  rows updated : {stats['rows_updated']}")
+    if stats["freed_files"]:
+        print(f"  duplicates collapsed: {stats['freed_files']} "
+              f"(same image, previously one file per work)")
+    else:
+        print("  no duplicate covers found")
+
+
 def main() -> None:
     p = argparse.ArgumentParser(prog="mediacat")
     p.add_argument("--catalog", default=str(C.DEFAULT_CATALOG),
@@ -206,16 +226,38 @@ def main() -> None:
                          help="apply a bundle — no API keys needed")
     pib.add_argument("file", help="bundle .zip from export-bundle")
 
+    sub.add_parser("covers-migrate",
+                   help="fold existing covers into the shared content store "
+                        "(collapses duplicates of the same album across drives)")
+
     args = p.parse_args()
     # first run with a shared/synced data dir: migrate legacy catalog+covers
     from media_catalog import config as _config
     msg = _config.ensure_data_dir()
     if msg:
         print(f"  {msg}", file=sys.stderr)
-    {"scan": cmd_scan, "summary": cmd_summary, "id3": cmd_id3, "tags": cmd_tags,
-     "nfo": cmd_nfo, "export-patch": cmd_export_patch,
-     "import-patch": cmd_import_patch, "export-bundle": cmd_export_bundle,
-     "import-bundle": cmd_import_bundle}[args.cmd](args)
+    handlers = {
+        "scan": cmd_scan, "summary": cmd_summary, "id3": cmd_id3,
+        "tags": cmd_tags, "nfo": cmd_nfo, "export-patch": cmd_export_patch,
+        "import-patch": cmd_import_patch, "export-bundle": cmd_export_bundle,
+        "import-bundle": cmd_import_bundle,
+        "covers-migrate": cmd_covers_migrate,
+    }
+
+    # Long writes go to a local copy first when the catalogue lives in a synced
+    # folder, and the finished file is moved back at the end -- one upload
+    # instead of minutes of churn. Done here rather than in each command so a
+    # command added later cannot be the one that forgets; the read-only ones
+    # are listed explicitly because copying the file to read it would be pure
+    # waste.
+    from media_catalog import staging as _staging
+    READERS = {"summary", "export-patch", "export-bundle"}
+    if args.cmd in READERS:
+        handlers[args.cmd](args)
+    else:
+        with _staging.staged_catalog(Path(args.catalog)) as _target:
+            args.catalog = str(_target)
+            handlers[args.cmd](args)
 
 
 if __name__ == "__main__":

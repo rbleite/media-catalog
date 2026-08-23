@@ -105,23 +105,20 @@ def ensure_data_dir() -> str | None:
 
 
 def resolve_cover(p: str | None) -> str | None:
-    """cover_path values are absolute paths from whichever machine enriched
-    the title (e.g. /Users/... on the Mac). On another machine, resolve by
-    filename inside this machine's COVERS_DIR. Returns a usable path or None."""
-    if not p:
-        return None
-    q = Path(p)
-    try:
-        if q.is_file():
-            return str(q)
-    except OSError:
-        pass
-    name = p.replace("\\", "/").rsplit("/", 1)[-1]
-    alt = COVERS_DIR / name
-    try:
-        return str(alt) if alt.is_file() else None
-    except OSError:
-        return None
+    """Turn a stored cover_path into a usable path on this machine, or None.
+
+    Delegates to covers.resolve(), which handles all three forms a catalogue
+    can hold at once: the content-store name (`by-content/<sha>.jpg`), a bare
+    filename, and the legacy absolute path written by whichever machine ran
+    the enrichment — the last of which is why covers went missing on the
+    second computer.
+
+    Imported inside the function: covers imports config, so doing it at module
+    level would be a cycle.
+    """
+    from . import covers
+    got = covers.resolve(p)
+    return str(got) if got else None
 
 
 # ── API keys ────────────────────────────────────────────────────────────────

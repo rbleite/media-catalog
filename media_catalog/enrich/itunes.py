@@ -10,6 +10,7 @@ import time
 import urllib.parse
 import urllib.request
 
+from media_catalog import covers
 from media_catalog import config
 
 _API = "https://itunes.apple.com/search"
@@ -95,21 +96,20 @@ def search_album(conn, artist: str, album: str) -> dict | None:
     return best or None
 
 
-def _download_cover(art_url: str, work_id: int) -> str | None:
-    config.COVERS_DIR.mkdir(parents=True, exist_ok=True)
-    dest = config.COVERS_DIR / f"album_{work_id}.jpg"
+
+def _download_cover(conn, art_url: str) -> str | None:
     # bump the artwork to 600x600
     url = re.sub(r"/\d+x\d+bb\.jpg$", "/600x600bb.jpg", art_url)
-    try:
-        req = urllib.request.Request(url, headers={"User-Agent": _UA})
-        with urllib.request.urlopen(req, timeout=30) as r:
-            data = r.read()
-        if len(data) < 500:
+
+    def _get():
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": _UA})
+            with urllib.request.urlopen(req, timeout=30) as r:
+                return r.read()
+        except Exception:
             return None
-        dest.write_bytes(data)
-        return str(dest)
-    except Exception:
-        return None
+
+    return covers.store_from_source(conn, f"itunes:{url}", _get)
 
 
 def enrich_albums(conn, limit: int | None = None, sleep: float = 0.3,
@@ -128,7 +128,7 @@ def enrich_albums(conn, limit: int | None = None, sleep: float = 0.3,
             missed += 1
             continue
         r = search_album(conn, artist, album)
-        cover = _download_cover(r["artworkUrl100"], wid) \
+        cover = _download_cover(conn, r["artworkUrl100"]) \
             if r and r.get("artworkUrl100") else None
         if cover:
             rd = (r.get("releaseDate") or "")[:4]

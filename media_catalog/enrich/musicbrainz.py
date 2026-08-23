@@ -10,6 +10,7 @@ import time
 import urllib.parse
 import urllib.request
 
+from media_catalog import covers
 from media_catalog import config
 
 _MB = "https://musicbrainz.org/ws/2"
@@ -62,21 +63,26 @@ def search_release_group(conn, artist: str, album: str) -> dict | None:
     return best or None
 
 
-def _download_cover(rgid: str, work_id: int) -> str | None:
-    config.COVERS_DIR.mkdir(parents=True, exist_ok=True)
-    dest = config.COVERS_DIR / f"album_{work_id}.jpg"
-    if dest.exists():
-        return str(dest)
-    try:
-        req = urllib.request.Request(_CAA.format(rgid), headers={"User-Agent": _UA})
-        with urllib.request.urlopen(req, timeout=30) as r:
-            data = r.read()
-        if len(data) < 500:                 # not a real image
+
+def _download_cover(conn, rgid: str) -> str | None:
+    """One file per distinct image, one download per release group.
+
+    The cover is stored under the hash of its own bytes, so the same album on
+    three drives keeps a single file; and it is remembered against `rgid`, so
+    the second and third works never hit Cover Art Archive at all. MusicBrainz
+    allows about one request a second, which made re-fetching an image already
+    on disk the slowest part of an enrichment run.
+    """
+    def _get():
+        try:
+            req = urllib.request.Request(_CAA.format(rgid),
+                                         headers={"User-Agent": _UA})
+            with urllib.request.urlopen(req, timeout=30) as r:
+                return r.read()
+        except Exception:
             return None
-        dest.write_bytes(data)
-        return str(dest)
-    except Exception:
-        return None
+
+    return covers.store_from_source(conn, f"mbid:{rgid}", _get)
 
 
 def enrich_albums(conn, limit: int | None = None, sleep: float = 1.1,
@@ -88,7 +94,7 @@ def enrich_albums(conn, limit: int | None = None, sleep: float = 1.1,
     now = datetime.datetime.now().isoformat(timespec="seconds")
     for i, (wid, album, artist) in enumerate(rows):
         rg = search_release_group(conn, artist, album)
-        cover = _download_cover(rg["id"], wid) if rg and rg.get("id") else None
+        cover = _download_cover(conn, rg["id"]) if rg and rg.get("id") else None
         if cover:
             rd = (rg.get("first-release-date") or "")[:4]
             yr = int(rd) if rd.isdigit() else None

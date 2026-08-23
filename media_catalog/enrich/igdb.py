@@ -14,6 +14,7 @@ import time
 import urllib.parse
 import urllib.request
 
+from media_catalog import covers
 from media_catalog import config
 
 _TOKEN_URL = "https://id.twitch.tv/oauth2/token"
@@ -132,7 +133,7 @@ def search_candidates(name: str, cid: str, token: str) -> list:
 def apply_candidate(conn, work_id: int, best: dict, cid: str) -> None:
     cover = None
     if best.get("cover", {}).get("image_id"):
-        cover = _download_cover(best["cover"]["image_id"], work_id)
+        cover = _download_cover(conn, best["cover"]["image_id"])
     ts = best.get("first_release_date")
     yr = datetime.datetime.utcfromtimestamp(ts).year if ts else None
     gg = ", ".join(g.get("name", "") for g in best.get("genres", []))
@@ -146,19 +147,18 @@ def apply_candidate(conn, work_id: int, best: dict, cid: str) -> None:
     conn.commit()
 
 
-def _download_cover(image_id: str, work_id: int) -> str | None:
-    config.COVERS_DIR.mkdir(parents=True, exist_ok=True)
-    dest = config.COVERS_DIR / f"game_{work_id}.jpg"
-    if dest.exists():
-        return str(dest)
-    try:
-        req = urllib.request.Request(_IMG.format(image_id),
-                                     headers={"User-Agent": _UA})
-        with urllib.request.urlopen(req, timeout=30) as r:
-            dest.write_bytes(r.read())
-        return str(dest)
-    except Exception:
-        return None
+
+def _download_cover(conn, image_id: str) -> str | None:
+    def _get():
+        try:
+            req = urllib.request.Request(_IMG.format(image_id),
+                                         headers={"User-Agent": _UA})
+            with urllib.request.urlopen(req, timeout=30) as r:
+                return r.read()
+        except Exception:
+            return None
+
+    return covers.store_from_source(conn, f"igdb:{image_id}", _get)
 
 
 def enrich_games(conn, limit: int | None = None, sleep: float = 0.28,
@@ -176,7 +176,7 @@ def enrich_games(conn, limit: int | None = None, sleep: float = 0.28,
         best = search_game(conn, title, cid, token)
         cover = None
         if best and best.get("cover", {}).get("image_id"):
-            cover = _download_cover(best["cover"]["image_id"], wid)
+            cover = _download_cover(conn, best["cover"]["image_id"])
         if best and best.get("id"):
             ts = best.get("first_release_date")
             yr = datetime.datetime.utcfromtimestamp(ts).year if ts else None
