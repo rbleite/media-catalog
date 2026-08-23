@@ -295,3 +295,20 @@ def test_an_unreadable_destination_is_replaced_rather_than_refused(cloud):
     staging.finalize(staged, db)
     assert _open_catalog(db).execute(
         "SELECT COUNT(*) FROM works").fetchone()[0] == 0
+
+
+def test_the_staged_copy_is_removed_after_publishing(cloud):
+    """Publishing through SQLite left the copy behind, so the staging dir grew
+    a stale catalogue on every run — and on Windows the leftover open handle
+    made the next attempt fail outright with WinError 32. Caught by CI on
+    windows-latest; assertable anywhere, because the leak is the same."""
+    root, stage = cloud
+    db = root / "catalog.db"
+    _open_catalog(db).close()
+
+    stage.mkdir(parents=True, exist_ok=True)
+    staged = stage / "catalog.db"
+    __import__("shutil").copy2(db, staged)
+
+    staging.finalize(staged, db)
+    assert not staged.exists(), "the staged copy was left in the staging dir"

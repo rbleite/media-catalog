@@ -144,6 +144,7 @@ def finalize(staged: Path, db: Path) -> str:
 
     last = ""
     for attempt in range(5):
+        err: Exception | None = None
         src = dst = None
         try:
             src = sqlite3.connect(staged)
@@ -151,24 +152,8 @@ def finalize(staged: Path, db: Path) -> str:
             dst.execute("PRAGMA busy_timeout=30000")
             src.backup(dst)
             dst.commit()
-            return f"published into {db}"
-        except sqlite3.DatabaseError as e:
-            # The destination is not a readable database — a truncated sync, a
-            # failed download. There is no identity worth preserving in that,
-            # and refusing would strand the finished catalogue in staging over
-            # a file that is rubble.
-            if "not a database" in str(e).lower() or "malformed" in str(e).lower():
-                try:
-                    _drop_sidecars(db)
-                    shutil.move(str(staged), str(db))
-                    return f"replaced an unreadable {db.name}"
-                except OSError as move_err:
-                    return f"could not publish ({move_err}) — kept at {staged}"
-            last = str(e)
-            time.sleep(2 * (attempt + 1))
         except sqlite3.Error as e:
-            last = str(e)
-            time.sleep(2 * (attempt + 1))
+            err = e
         finally:
             for c in (src, dst):
                 if c is not None:
@@ -176,6 +161,31 @@ def finalize(staged: Path, db: Path) -> str:
                         c.close()
                     except sqlite3.Error:
                         pass
+
+        # Every filesystem operation below runs AFTER those handles are closed.
+        # Windows refuses to delete or move a file any process still has open
+        # (WinError 32), so touching `staged` while `src` was attached left the
+        # copy behind and made the corrupt-destination path a silent no-op.
+        if err is None:
+            staged.unlink(missing_ok=True)
+            return f"published into {db}"
+
+        # The destination is not a readable database — a truncated sync, a
+        # failed download. There is no identity worth preserving in rubble, and
+        # refusing would strand the finished catalogue in staging.
+        msg = str(err).lower()
+        if isinstance(err, sqlite3.DatabaseError) and (
+                "not a database" in msg or "malformed" in msg):
+            try:
+                _drop_sidecars(db)
+                shutil.move(str(staged), str(db))
+                return f"replaced an unreadable {db.name}"
+            except OSError as move_err:
+                return f"could not publish ({move_err}) — kept at {staged}"
+
+        last = str(err)
+        time.sleep(2 * (attempt + 1))
+
     # Deliberately no move fallback here: reaching this means the destination
     # is a real database that is locked or busy — something else is using it
     # right now, which is exactly the case a move would damage.
