@@ -312,3 +312,103 @@ def test_the_staged_copy_is_removed_after_publishing(cloud):
 
     staging.finalize(staged, db)
     assert not staged.exists(), "the staged copy was left in the staging dir"
+
+
+# ── the app's enrichment buttons ─────────────────────────────────────────────
+#
+# Reported from the running app on macOS: "Enriquecer séries" stored one
+# cover and then died with "disk I/O error". The buttons wrote straight into
+# the synced catalogue, one commit per work, each creating and deleting
+# catalog.db-journal in a folder the sync client watches. The CLI was staged
+# all along; the buttons were not.
+
+def _count(db):
+    import sqlite3 as _sq
+    c = _sq.connect(db)
+    try:
+        return c.execute("SELECT COUNT(*) FROM works").fetchone()[0]
+    finally:
+        c.close()
+
+
+def _add_work(conn, wid):
+    conn.execute("INSERT INTO works (id, type, title, rel_path, drive_label,"
+                 " updated_at) VALUES (?, 'series', 'S', ?, 'D', '')",
+                 (wid, f"/s{wid}"))
+    conn.commit()
+
+
+def test_an_enrichment_writes_locally_and_publishes_once(cloud):
+    root, stage = cloud
+    db = root / "catalog.db"
+    _open_catalog(db).close()
+    seen = {}
+
+    def enrich(conn):
+        for wid in (1, 2, 3):                  # one commit per work, as tmdb does
+            _add_work(conn, wid)
+        seen["target"] = Path(conn.execute("PRAGMA database_list")
+                              .fetchone()[2])
+        seen["published_mid_run"] = _count(db)
+        return {"matched": 3}
+
+    res = staging.run_staged(db, _open_catalog, enrich)
+
+    assert res == {"matched": 3}
+    assert stage in seen["target"].parents, "the pass wrote in the synced folder"
+    assert seen["published_mid_run"] == 0, "commits reached the synced file mid-run"
+    assert _count(db) == 3, "and the finished work was not published"
+
+
+def test_no_journal_is_created_in_the_synced_folder_during_the_pass(cloud):
+    """The mechanism behind the I/O error, checked directly."""
+    root, _stage = cloud
+    db = root / "catalog.db"
+    _open_catalog(db).close()
+    seen = []
+
+    def enrich(conn):
+        conn.execute("BEGIN")
+        conn.execute("INSERT INTO works (id, type, title, rel_path, drive_label,"
+                     " updated_at) VALUES (1, 'series', 'S', '/s', 'D', '')")
+        seen.extend(p.name for p in root.iterdir())   # journal is live now
+        conn.commit()
+
+    staging.run_staged(db, _open_catalog, enrich)
+    assert not [n for n in seen if n.endswith(("-journal", "-wal"))], seen
+
+
+def test_a_failed_pass_publishes_nothing(cloud):
+    root, stage = cloud
+    db = root / "catalog.db"
+    _open_catalog(db).close()
+
+    def enrich(conn):
+        _add_work(conn, 1)
+        raise RuntimeError("network died")
+
+    with pytest.raises(RuntimeError):
+        staging.run_staged(db, _open_catalog, enrich)
+    assert _count(db) == 0
+    assert (stage / "catalog.db").exists(), "the work done is kept for the next run"
+
+
+def test_the_staged_copy_is_gone_after_a_good_pass(cloud):
+    """Fails on Windows if the pass's connection is left open."""
+    root, stage = cloud
+    db = root / "catalog.db"
+    _open_catalog(db).close()
+    staging.run_staged(db, _open_catalog, lambda c: _add_work(c, 1))
+    assert not (stage / "catalog.db").exists()
+
+
+def test_every_enrichment_button_goes_through_staging():
+    """A button added later that calls enrich_*(conn, ...) would write in
+    place again -- and work fine in every test, because tests do not run a
+    sync client."""
+    import re
+    src = (REPO / "app.py").read_text(encoding="utf-8")
+    in_place = re.findall(r"\b\w+\.enrich_\w+\(conn\b", src)
+    assert not in_place, f"enrichment writing in place: {in_place}"
+    staged = re.findall(r"_staged\(\w+\.enrich_\w+", src)
+    assert len(staged) >= 9, staged
