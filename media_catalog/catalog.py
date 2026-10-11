@@ -105,6 +105,29 @@ def ensure_search_index(conn: sqlite3.Connection) -> bool:
     except sqlite3.Error:
         return False
 
+
+def file_identity(path: Path) -> tuple[int, int] | None:
+    """(device, inode) of the catalogue file, or None if it is not there.
+
+    An open sqlite3 connection is bound to the file it opened, not to the
+    name. When something replaces the file -- a sync client downloading the
+    copy another computer wrote, or anything that moves a new file into
+    place -- the connection is left on the old, unlinked one, and every write
+    through it fails with "attempt to write a readonly database". Comparing
+    this before and after is how a long-lived connection notices."""
+    try:
+        st = Path(path).stat()
+    except OSError:
+        return None
+    return (st.st_dev, st.st_ino)
+
+
+def replaced_since(identity: tuple[int, int] | None, path: Path) -> bool:
+    """True when the file at `path` is no longer the one `identity` named."""
+    now = file_identity(path)
+    return now is not None and now != identity
+
+
 def open_catalog(path: Path = DEFAULT_CATALOG,
                  check_same_thread: bool = True) -> sqlite3.Connection:
     # Streamlit reruns the script across worker threads, so the gallery opens

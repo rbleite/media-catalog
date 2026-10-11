@@ -114,10 +114,12 @@ def human(n: int | None) -> str:
 
 
 @st.cache_resource
-def _conn() -> sqlite3.Connection:
+def _conn() -> tuple[sqlite3.Connection, tuple[int, int] | None]:
     # check_same_thread=False: Streamlit serves reruns from a thread pool, so
     # the single cached connection must be usable across threads.
-    return C.open_catalog(C.DEFAULT_CATALOG, check_same_thread=False)
+    # The file's identity is recorded with it -- see the check below.
+    c = C.open_catalog(C.DEFAULT_CATALOG, check_same_thread=False)
+    return c, C.file_identity(C.DEFAULT_CATALOG)
 
 
 # First run with a shared data dir configured: copy the legacy catalog/covers
@@ -131,7 +133,19 @@ if not st.session_state.get("mc_data_dir_ready"):
         st.toast("📦 " + _migr)
     st.session_state["mc_data_dir_ready"] = True
 
-conn = _conn()
+conn, _cat_identity = _conn()
+# The catalogue lives in a synced folder. When the sync client brings down a
+# copy written on another computer it REPLACES the file, and the cached
+# connection is left on the old one: every write then fails with "attempt to
+# write a readonly database" until the app is restarted. Checked on every
+# rerun, so the next click reopens instead.
+if C.replaced_since(_cat_identity, C.DEFAULT_CATALOG):
+    try:
+        conn.close()
+    except sqlite3.Error:
+        pass
+    _conn.clear()
+    conn, _cat_identity = _conn()
 
 
 def _has_fts() -> bool:
