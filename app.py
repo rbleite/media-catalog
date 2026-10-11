@@ -32,6 +32,7 @@ for _m in (media_catalog.config, media_catalog.catalog):
 from media_catalog import catalog as C
 from media_catalog import covers
 from media_catalog import config
+from media_catalog import staging
 
 st.set_page_config(page_title="Media Catalog", page_icon="🎬", layout="wide")
 
@@ -146,6 +147,16 @@ if C.replaced_since(_cat_identity, C.DEFAULT_CATALOG):
         pass
     _conn.clear()
     conn, _cat_identity = _conn()
+
+
+def _staged(enrich, *args, **kwargs):
+    """Run one enrichment pass on a local copy and publish it once -- see
+    staging.run_staged for why the buttons must not write in place."""
+    conn.commit()        # nothing of ours left pending in the synced file
+    return staging.run_staged(
+        C.DEFAULT_CATALOG,
+        lambda p: C.open_catalog(p, check_same_thread=False),
+        enrich, *args, **kwargs)
 
 
 def _has_fts() -> bool:
@@ -279,7 +290,7 @@ if config.has_tmdb():
         prog = st.sidebar.progress(0.0, text="A enriquecer…")
         def _cb(i, n, m, ms):
             prog.progress(i / max(n, 1), text=f"{i}/{n} · {m} capas")
-        res = tmdb.enrich_movies(conn, config.get("tmdb_api_key"), progress=_cb)
+        res = _staged(tmdb.enrich_movies, config.get("tmdb_api_key"), progress=_cb)
         st.sidebar.success(f"✓ {res['matched']} capas · {res['missed']} sem match")
         st.cache_resource.clear()
         st.rerun()
@@ -291,7 +302,7 @@ if config.has_tmdb():
         prog = st.sidebar.progress(0.0, text="A enriquecer séries…")
         def _cbs(i, n, m, ms):
             prog.progress(i / max(n, 1), text=f"{i}/{n} · {m} capas")
-        res = tmdb.enrich_series(conn, config.get("tmdb_api_key"), progress=_cbs)
+        res = _staged(tmdb.enrich_series, config.get("tmdb_api_key"), progress=_cbs)
         st.sidebar.success(f"✓ {res['matched']} capas · {res['missed']} sem match")
         st.cache_resource.clear()
         st.rerun()
@@ -307,7 +318,7 @@ if config.has_igdb():
         prog = st.sidebar.progress(0.0, text="A enriquecer…")
         def _cbg(i, n, m, ms):
             prog.progress(i / max(n, 1), text=f"{i}/{n} · {m} capas")
-        res = igdb.enrich_games(conn, progress=_cbg)
+        res = _staged(igdb.enrich_games, progress=_cbg)
         st.sidebar.success(f"✓ {res['matched']} capas · {res['missed']} sem match")
         st.cache_resource.clear()
         st.rerun()
@@ -322,7 +333,7 @@ if st.sidebar.button(f"💿 Enriquecer álbuns via MusicBrainz ({_pa} por fazer)
     prog = st.sidebar.progress(0.0, text="A enriquecer… (~1s/álbum)")
     def _cba(i, n, m, ms):
         prog.progress(i / max(n, 1), text=f"{i}/{n} · {m} capas")
-    res = _mb.enrich_albums(conn, progress=_cba)
+    res = _staged(_mb.enrich_albums, progress=_cba)
     st.sidebar.success(f"✓ {res['matched']} capas · {res['missed']} sem match")
     st.cache_resource.clear()
     st.rerun()
@@ -334,7 +345,7 @@ if st.sidebar.button(f"💿 Capas em falta via Deezer ({_pai})", disabled=_pai =
     prog = st.sidebar.progress(0.0, text="A procurar capas…")
     def _cbi(i, n, m, ms):
         prog.progress(i / max(n, 1), text=f"{i}/{n} · {m} capas")
-    res = _dz.enrich_albums(conn, progress=_cbi)
+    res = _staged(_dz.enrich_albums, progress=_cbi)
     st.sidebar.success(f"✓ +{res['matched']} capas Deezer")
     st.cache_resource.clear()
     st.rerun()
@@ -344,7 +355,7 @@ if st.sidebar.button("🎭 Géneros dos álbuns (Deezer)"):
     prog = st.sidebar.progress(0.0, text="A buscar géneros…")
     def _cbg2(i, n, m, ms):
         prog.progress(i / max(n, 1), text=f"{i}/{n} · {m}")
-    res = _dz2.enrich_genres(conn, progress=_cbg2)
+    res = _staged(_dz2.enrich_genres, progress=_cbg2)
     st.sidebar.success(f"✓ {res['matched']} géneros")
     st.cache_resource.clear()
     st.rerun()
@@ -364,7 +375,7 @@ if st.sidebar.button(
     prog = st.sidebar.progress(0.0, text="A ler tags ID3…")
     def _cbi3(i, n, u, cv):
         prog.progress(i / max(n, 1), text=f"{i}/{n} · {u} álbuns · {cv} capas")
-    res = _id3.enrich_id3(conn, _id3_roots, force=_id3_force, progress=_cbi3)
+    res = _staged(_id3.enrich_id3, _id3_roots, force=_id3_force, progress=_cbi3)
     st.sidebar.success(f"✓ {res['updated']} álbuns · {res['covers']} capas "
                        f"embutidas ({res['skipped_offline']} offline)")
     st.cache_resource.clear()
@@ -391,7 +402,7 @@ if st.sidebar.button(
     def _cbct(i, n, u, tg):
         prog.progress(i / max(n, 1),
                       text=f"{i}/{n} · {u} atualizados · {tg} com tags")
-    res = _cont.enrich_container(conn, _id3_roots, force=_tag_force,
+    res = _staged(_cont.enrich_container, _id3_roots, force=_tag_force,
                                  progress=_cbct)
     st.sidebar.success(f"✓ {res['updated']} atualizados · {res['tagged']} com "
                        f"tags · {res['no_tags']} sem tags "
@@ -421,7 +432,7 @@ if config.has_tmdb():
         prog = st.sidebar.progress(0.0, text="A ler .nfo…")
         def _cbn(i, n, m, nid):
             prog.progress(i / max(n, 1), text=f"{i}/{n} · {m} igualados")
-        res = _nfo.enrich_nfo(conn, _id3_roots, config.get("tmdb_api_key"),
+        res = _staged(_nfo.enrich_nfo, _id3_roots, config.get("tmdb_api_key"),
                               force=_nfo_force, progress=_cbn)
         st.sidebar.success(f"✓ {res['matched']} filmes via IMDb · "
                            f"{res['no_id']} .nfo sem id ({res['skipped_offline']} offline)")

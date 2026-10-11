@@ -206,3 +206,28 @@ def staged_catalog(db: Path):
     yield target
     if staged:
         finalize(target, Path(db))
+
+
+def run_staged(db: Path, opener, fn, *args, **kwargs):
+    """`fn(conn, *args, **kwargs)` on a staged copy of `db`, published once.
+
+    For the app's enrichment buttons. The catalogue sits in a synced folder
+    and is not in WAL mode, so every commit creates and deletes
+    catalog.db-journal beside it. An enrichment commits once per work --
+    dozens of journal cycles in a folder the sync client is watching -- and on
+    macOS that ended in "disk I/O error" one series into a run. The CLI
+    already staged through the dispatch; the buttons wrote in place.
+
+    Same contract as staged_catalog: if `fn` raises, nothing is published and
+    the staged copy is reused by the next run. The connection is closed
+    either way -- Windows will not let staging delete a file still open.
+    """
+    with staged_catalog(Path(db)) as target:
+        conn = opener(target)
+        try:
+            res = fn(conn, *args, **kwargs)
+        except BaseException:
+            conn.close()
+            raise
+        conn.close()
+    return res
