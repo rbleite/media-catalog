@@ -21,8 +21,10 @@ jobs:
       # the catalogue is built on one machine and read on another, so the
       # parsing has to agree across all three — path separators and the
       # console encoding differ on Windows
+      # (macos-14 was retired by GitHub on 2026-11-02: jobs on it are
+      # cancelled at once, without a log)
       matrix:
-        os: [ubuntu-latest, macos-14, windows-latest]
+        os: [ubuntu-latest, macos-15, windows-latest]
     steps:
       - uses: actions/checkout@v4
 
